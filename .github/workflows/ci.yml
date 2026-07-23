@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 22 is the minimum consumer version (engines), 24 the recommended
+        # development version (.nvmrc).
+        node-version: [22, 24]
+    steps:
+      - uses: actions/checkout@v7
+
+      # check-latest avoids a stale runner tool cache serving a Node patch
+      # older than what npm 12 supports (e.g. 22.x before 22.22.2).
+      #
+      # package-manager-cache: false is required. setup-node auto-enables npm
+      # caching when it detects a lockfile, and that step runs npm config get
+      # cache with the runner's bundled npm 10/11, which fails the repository's
+      # devEngines check (npm >= 12) before the upgrade step below can run.
+      # Simply leaving the cache option unset is not enough because auto-caching
+      # is on by default.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          check-latest: true
+          package-manager-cache: false
+
+      # Runs outside the repository because the runner's bundled npm 11 would
+      # otherwise fail the repository's devEngines check (npm >= 12) before it
+      # can upgrade itself.
+      - name: Use npm 12 (required by devEngines)
+        run: npm install -g npm@12
+        working-directory: ${{ runner.temp }}
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+      - name: Verify publishable package contents
+        run: npm pack --dry-run
