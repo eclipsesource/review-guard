@@ -165,6 +165,7 @@ export interface ReviewComment {
   line: number | null;
   createdAt: string;
   updatedAt: string;
+  url: string | null;
   /** Reaction content -> count, only for counts > 0 (e.g. THUMBS_DOWN). */
   reactions?: Record<string, number>;
   pullRequestReview?: {
@@ -404,6 +405,7 @@ export class GitHubReviewClient {
                   pageInfo { hasNextPage endCursor }
                   nodes {
                     id
+                    url
                     body
                     path
                     line
@@ -520,6 +522,7 @@ export class GitHubReviewClient {
               pageInfo { hasNextPage endCursor }
               nodes {
                 id
+                url
                 body
                 path
                 line
@@ -731,6 +734,7 @@ export class GitHubReviewClient {
               pageInfo { hasNextPage endCursor }
               nodes {
                 id
+                url
                 body
                 path
                 line
@@ -865,6 +869,7 @@ export class GitHubReviewClient {
             comments(first: 1) {
               nodes {
                 id
+                url
                 body
                 path
                 line
@@ -963,6 +968,7 @@ export class GitHubReviewClient {
         updatePullRequestReviewComment(input: $input) {
           pullRequestReviewComment {
             id
+            url
             body
             path
             line
@@ -1014,6 +1020,7 @@ export class GitHubReviewClient {
           }
           pullRequestReviewComment {
             id
+            url
             body
             path
             line
@@ -1282,6 +1289,7 @@ export class GitHubReviewClient {
       body: comment.body ?? "",
       path: comment.path ?? "",
       line: comment.line ?? null,
+      url: comment.url ?? null,
       createdAt: comment.createdAt ?? "",
       updatedAt: comment.updatedAt ?? "",
       reactions: this.mapReactionGroups(comment),

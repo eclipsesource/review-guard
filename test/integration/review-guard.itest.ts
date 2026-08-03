@@ -510,6 +510,7 @@ describe("ReviewGuard against a real repository", () => {
       expect(thread!.comments[0].author).toBe(reviewerLogin);
       expect(thread!.isResolved).toBe(false);
       expect(thread!.comments[0].reactions?.THUMBS_DOWN).toBe(1);
+      expect(thread!.comments[0].url).toContain(`/pull/${pullNumber}#discussion_r`);
       return thread!.id;
     });
   });

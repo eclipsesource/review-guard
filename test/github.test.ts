@@ -151,6 +151,89 @@ describe("submitReview safety gate", () => {
   });
 });
 
+describe("getPullRequestReviewContext permalinks", () => {
+  function contextGql(commentNodes: unknown[]) {
+    return gqlBySubstring({
+      "reviewThreads(first: 100": {
+        repository: {
+          pullRequest: {
+            id: "PR_NODE",
+            number: 1,
+            title: "t",
+            body: "b",
+            author: { login: "alice" },
+            url: "https://github.com/octo/hello/pull/1",
+            state: "OPEN",
+            isDraft: false,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-02T00:00:00Z",
+            baseRefName: "main",
+            headRefName: "feature",
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  id: "T_1",
+                  path: "a.ts",
+                  line: 3,
+                  diffSide: "RIGHT",
+                  subjectType: "LINE",
+                  isResolved: false,
+                  isOutdated: false,
+                  isCollapsed: false,
+                  comments: {
+                    totalCount: commentNodes.length,
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: commentNodes,
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+  }
+
+  const submitted = (id: string, url: string) => ({
+    id,
+    url,
+    body: `body of ${id}`,
+    path: "a.ts",
+    line: 3,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    author: { login: "bot" },
+    pullRequestReview: {
+      id: "REV_1",
+      databaseId: 10,
+      state: "COMMENTED",
+      author: { login: "bot" },
+    },
+  });
+
+  const DISCUSSION_URL = "https://github.com/octo/hello/pull/1#discussion_r1";
+
+  it("exposes each thread comment's permalink", async () => {
+    const { client } = makeClient(
+      {},
+      {
+        gql: contextGql([
+          submitted("C_1", DISCUSSION_URL),
+          submitted("C_2", "https://github.com/octo/hello/pull/1#discussion_r2"),
+        ]),
+      },
+    );
+
+    const context = await client.getPullRequestReviewContext(PR);
+    expect(context.threads).toHaveLength(1);
+    expect(context.threads[0].comments.map((comment) => comment.url)).toEqual([
+      DISCUSSION_URL,
+      "https://github.com/octo/hello/pull/1#discussion_r2",
+    ]);
+  });
+});
+
 describe("deletePendingReview", () => {
   it("reports an explicit deletion flag, since GitHub returns the deleted node still as PENDING", async () => {
     const gql = gqlBySubstring({
