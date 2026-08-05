@@ -151,6 +151,160 @@ describe("submitReview safety gate", () => {
   });
 });
 
+describe("permalinks", () => {
+  function contextGql(commentNodes: unknown[]) {
+    return gqlBySubstring({
+      "reviewThreads(first: 100": {
+        repository: {
+          pullRequest: {
+            id: "PR_NODE",
+            number: 1,
+            title: "t",
+            body: "b",
+            author: { login: "alice" },
+            url: "https://github.com/octo/hello/pull/1",
+            state: "OPEN",
+            isDraft: false,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-02T00:00:00Z",
+            baseRefName: "main",
+            headRefName: "feature",
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  id: "T_1",
+                  path: "a.ts",
+                  line: 3,
+                  diffSide: "RIGHT",
+                  subjectType: "LINE",
+                  isResolved: false,
+                  isOutdated: false,
+                  isCollapsed: false,
+                  comments: {
+                    totalCount: commentNodes.length,
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: commentNodes,
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+  }
+
+  const commentNode = (id: string, url: string, reviewState = "COMMENTED") => ({
+    id,
+    url,
+    body: `body of ${id}`,
+    path: "a.ts",
+    line: 3,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    author: { login: "bot" },
+    pullRequestReview: {
+      id: "REV_1",
+      databaseId: 10,
+      state: reviewState,
+      author: { login: "bot" },
+    },
+  });
+  const submitted = (id: string, url: string) => commentNode(id, url);
+  const draft = (id: string, url: string) => commentNode(id, url, "PENDING");
+
+  const DISCUSSION_URL = "https://github.com/octo/hello/pull/1#discussion_r1";
+
+  it("exposes each thread comment's permalink", async () => {
+    const { client } = makeClient(
+      {},
+      {
+        gql: contextGql([
+          submitted("C_1", DISCUSSION_URL),
+          submitted("C_2", "https://github.com/octo/hello/pull/1#discussion_r2"),
+        ]),
+      },
+    );
+
+    const context = await client.getPullRequestReviewContext(PR);
+    expect(context.threads).toHaveLength(1);
+    expect(context.threads[0].comments.map((comment) => comment.url)).toEqual([
+      DISCUSSION_URL,
+      "https://github.com/octo/hello/pull/1#discussion_r2",
+    ]);
+  });
+
+  // The pending path is the one an agent uses to quote its own drafts, and the
+  // `?? null` fallback in the mapper would let a dropped `url` selection
+  // degrade silently, so it gets its own assertion.
+  it("exposes each pending review comment's permalink", async () => {
+    const gql = gqlBySubstring({
+      "node(id: $reviewId)": {
+        node: {
+          id: "REV_1",
+          databaseId: 10,
+          state: "PENDING",
+          body: "",
+          createdAt: "2026-01-01T00:00:00Z",
+          author: { login: "bot" },
+          comments: {
+            totalCount: 1,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [draft("C_1", DISCUSSION_URL)],
+          },
+        },
+      },
+    });
+    const { client } = makeClient(
+      {},
+      { gql, octokit: makeOctokitStub("bot", [PENDING_REVIEW_REST]) },
+    );
+
+    const review = await client.listPendingReview(PR);
+    expect(review?.comments.map((comment) => comment.url)).toEqual([DISCUSSION_URL]);
+  });
+
+  // The REST-sourced fields spell the permalink `html_url`, but the output shape
+  // normalizes every one of them to `url`.
+  it("exposes review summary and conversation comment permalinks as url", async () => {
+    const REVIEW_URL = "https://github.com/octo/hello/pull/1#pullrequestreview-10";
+    const PR_COMMENT_URL = "https://github.com/octo/hello/pull/1#issuecomment-20";
+    const octokit = makeOctokitStub("bot", [
+      {
+        state: "COMMENTED",
+        node_id: "REV_1",
+        id: 10,
+        user: { login: "alice" },
+        body: "looks good",
+        submitted_at: "2026-01-01T00:00:00Z",
+        commit_id: "abc123",
+        html_url: REVIEW_URL,
+        author_association: "MEMBER",
+      },
+    ]);
+    octokit.issues.listComments.mockResolvedValue({
+      data: [
+        {
+          node_id: "IC_1",
+          id: 20,
+          user: { login: "alice" },
+          body: "ping",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          html_url: PR_COMMENT_URL,
+          author_association: "MEMBER",
+        },
+      ],
+    });
+    const { client } = makeClient({}, { gql: contextGql([]), octokit });
+
+    const context = await client.getPullRequestReviewContext(PR);
+    expect(context.reviews.map((review) => review.url)).toEqual([REVIEW_URL]);
+    expect(context.prComments.map((comment) => comment.url)).toEqual([PR_COMMENT_URL]);
+  });
+});
+
 describe("deletePendingReview", () => {
   it("reports an explicit deletion flag, since GitHub returns the deleted node still as PENDING", async () => {
     const gql = gqlBySubstring({

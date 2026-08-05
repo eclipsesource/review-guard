@@ -153,7 +153,8 @@ export interface ReviewSummary {
   body: string;
   submittedAt: string | null;
   commitId: string | null;
-  htmlUrl: string | null;
+  /** Permalink to the submitted review. */
+  url: string | null;
   authorAssociation: string;
 }
 
@@ -165,6 +166,15 @@ export interface ReviewComment {
   line: number | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Permalink to the comment. GraphQL types this as non-null, but it stays
+   * nullable here so a response that omits it degrades to null instead of
+   * failing the whole call. A comment in a pending review already carries its
+   * final permalink, which starts resolving once the review is submitted. Since
+   * all comments of a review go live at the same moment, one pending comment can
+   * link another.
+   */
+  url: string | null;
   /** Reaction content -> count, only for counts > 0 (e.g. THUMBS_DOWN). */
   reactions?: Record<string, number>;
   pullRequestReview?: {
@@ -200,7 +210,8 @@ export interface PullRequestConversationComment {
   body: string;
   createdAt: string;
   updatedAt: string;
-  htmlUrl: string;
+  /** Permalink to the comment. */
+  url: string;
   authorAssociation: string;
   /** Reaction content -> count, only for counts > 0 (e.g. THUMBS_DOWN). */
   reactions?: Record<string, number>;
@@ -404,6 +415,7 @@ export class GitHubReviewClient {
                   pageInfo { hasNextPage endCursor }
                   nodes {
                     id
+                    url
                     body
                     path
                     line
@@ -520,6 +532,7 @@ export class GitHubReviewClient {
               pageInfo { hasNextPage endCursor }
               nodes {
                 id
+                url
                 body
                 path
                 line
@@ -585,7 +598,7 @@ export class GitHubReviewClient {
           body: review.body ?? "",
           submittedAt: review.submitted_at ?? null,
           commitId: review.commit_id ?? null,
-          htmlUrl: review.html_url ?? null,
+          url: review.html_url ?? null,
           authorAssociation: review.author_association,
         });
       }
@@ -622,7 +635,7 @@ export class GitHubReviewClient {
           body: comment.body ?? "",
           createdAt: comment.created_at,
           updatedAt: comment.updated_at,
-          htmlUrl: comment.html_url,
+          url: comment.html_url,
           authorAssociation: comment.author_association,
           reactions: this.mapRestReactions((comment as any).reactions),
         });
@@ -731,6 +744,7 @@ export class GitHubReviewClient {
               pageInfo { hasNextPage endCursor }
               nodes {
                 id
+                url
                 body
                 path
                 line
@@ -865,6 +879,7 @@ export class GitHubReviewClient {
             comments(first: 1) {
               nodes {
                 id
+                url
                 body
                 path
                 line
@@ -963,6 +978,7 @@ export class GitHubReviewClient {
         updatePullRequestReviewComment(input: $input) {
           pullRequestReviewComment {
             id
+            url
             body
             path
             line
@@ -1014,6 +1030,7 @@ export class GitHubReviewClient {
           }
           pullRequestReviewComment {
             id
+            url
             body
             path
             line
@@ -1282,6 +1299,7 @@ export class GitHubReviewClient {
       body: comment.body ?? "",
       path: comment.path ?? "",
       line: comment.line ?? null,
+      url: comment.url ?? null,
       createdAt: comment.createdAt ?? "",
       updatedAt: comment.updatedAt ?? "",
       reactions: this.mapReactionGroups(comment),
