@@ -151,7 +151,7 @@ describe("submitReview safety gate", () => {
   });
 });
 
-describe("getPullRequestReviewContext permalinks", () => {
+describe("permalinks", () => {
   function contextGql(commentNodes: unknown[]) {
     return gqlBySubstring({
       "reviewThreads(first: 100": {
@@ -195,7 +195,7 @@ describe("getPullRequestReviewContext permalinks", () => {
     });
   }
 
-  const submitted = (id: string, url: string) => ({
+  const commentNode = (id: string, url: string, reviewState = "COMMENTED") => ({
     id,
     url,
     body: `body of ${id}`,
@@ -207,10 +207,12 @@ describe("getPullRequestReviewContext permalinks", () => {
     pullRequestReview: {
       id: "REV_1",
       databaseId: 10,
-      state: "COMMENTED",
+      state: reviewState,
       author: { login: "bot" },
     },
   });
+  const submitted = (id: string, url: string) => commentNode(id, url);
+  const draft = (id: string, url: string) => commentNode(id, url, "PENDING");
 
   const DISCUSSION_URL = "https://github.com/octo/hello/pull/1#discussion_r1";
 
@@ -231,6 +233,75 @@ describe("getPullRequestReviewContext permalinks", () => {
       DISCUSSION_URL,
       "https://github.com/octo/hello/pull/1#discussion_r2",
     ]);
+  });
+
+  // The pending path is the one an agent uses to quote its own drafts, and the
+  // `?? null` fallback in the mapper would let a dropped `url` selection
+  // degrade silently, so it gets its own assertion.
+  it("exposes each pending review comment's permalink", async () => {
+    const gql = gqlBySubstring({
+      "node(id: $reviewId)": {
+        node: {
+          id: "REV_1",
+          databaseId: 10,
+          state: "PENDING",
+          body: "",
+          createdAt: "2026-01-01T00:00:00Z",
+          author: { login: "bot" },
+          comments: {
+            totalCount: 1,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [draft("C_1", DISCUSSION_URL)],
+          },
+        },
+      },
+    });
+    const { client } = makeClient(
+      {},
+      { gql, octokit: makeOctokitStub("bot", [PENDING_REVIEW_REST]) },
+    );
+
+    const review = await client.listPendingReview(PR);
+    expect(review?.comments.map((comment) => comment.url)).toEqual([DISCUSSION_URL]);
+  });
+
+  // The REST-sourced fields spell the permalink `html_url`, but the output shape
+  // normalizes every one of them to `url`.
+  it("exposes review summary and conversation comment permalinks as url", async () => {
+    const REVIEW_URL = "https://github.com/octo/hello/pull/1#pullrequestreview-10";
+    const PR_COMMENT_URL = "https://github.com/octo/hello/pull/1#issuecomment-20";
+    const octokit = makeOctokitStub("bot", [
+      {
+        state: "COMMENTED",
+        node_id: "REV_1",
+        id: 10,
+        user: { login: "alice" },
+        body: "looks good",
+        submitted_at: "2026-01-01T00:00:00Z",
+        commit_id: "abc123",
+        html_url: REVIEW_URL,
+        author_association: "MEMBER",
+      },
+    ]);
+    octokit.issues.listComments.mockResolvedValue({
+      data: [
+        {
+          node_id: "IC_1",
+          id: 20,
+          user: { login: "alice" },
+          body: "ping",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          html_url: PR_COMMENT_URL,
+          author_association: "MEMBER",
+        },
+      ],
+    });
+    const { client } = makeClient({}, { gql: contextGql([]), octokit });
+
+    const context = await client.getPullRequestReviewContext(PR);
+    expect(context.reviews.map((review) => review.url)).toEqual([REVIEW_URL]);
+    expect(context.prComments.map((comment) => comment.url)).toEqual([PR_COMMENT_URL]);
   });
 });
 

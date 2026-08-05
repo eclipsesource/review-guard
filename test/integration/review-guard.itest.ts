@@ -196,6 +196,8 @@ let scopedTools: Client;
 
 let draftComments: ReviewComment[];
 let ownThreadId: string;
+/** Permalink the finding carried while it was still a draft. */
+let draftFindingUrl: string | null;
 
 function target(): { owner: string; repo: string; pull_number: number } {
   return { owner: config.owner, repo: config.repo, pull_number: pullNumber };
@@ -396,6 +398,13 @@ describe("ReviewGuard against a real repository", () => {
     const { data: seenByAuthor } = await authorOctokit.rest.pulls.listReviews(target());
     expect(seenByAuthor.filter((review) => review.user?.login === reviewerLogin)).toHaveLength(0);
 
+    // The draft is invisible at comment level too, not just as a review.
+    const { data: commentsSeenByAuthor } =
+      await authorOctokit.rest.pulls.listReviewComments(target());
+    expect(commentsSeenByAuthor.filter((comment) => comment.body === DRAFT_LINE_BODY)).toHaveLength(
+      0,
+    );
+
     const context = await callTool<PullRequestReviewContext>(
       pendingTools,
       "get_pr_review_context",
@@ -412,6 +421,12 @@ describe("ReviewGuard against a real repository", () => {
     expect(review.comments.map((comment) => comment.body).sort()).toEqual(
       [DRAFT_FILE_BODY, DRAFT_LINE_BODY].sort(),
     );
+    // A draft comment already carries a permalink, so an agent can cross-link
+    // its own findings while drafting. That the link survives submission is
+    // asserted further down.
+    for (const comment of review.comments) {
+      expect(comment.url).toContain(`/pull/${pullNumber}#discussion_r`);
+    }
   });
 
   it("modify_review_comment updates a draft comment", async () => {
@@ -460,10 +475,13 @@ describe("ReviewGuard against a real repository", () => {
   });
 
   it("submit posts the review with the fixed disclaimer prefix", async () => {
-    await callTool<AddReviewCommentsResult>(submitTools, "add_review_comments", {
+    const draft = await callTool<AddReviewCommentsResult>(submitTools, "add_review_comments", {
       ...target(),
       comments: [{ path: filePath, body: FINDING_BODY, line: 3 }],
     });
+    draftFindingUrl = draft.addedComments[0].url;
+    expect(draftFindingUrl).toContain(`/pull/${pullNumber}#discussion_r`);
+
     const submitted = await callTool<{ id: string; state: string }>(submitTools, "submit", {
       ...target(),
       action: "comment",
@@ -511,6 +529,9 @@ describe("ReviewGuard against a real repository", () => {
       expect(thread!.isResolved).toBe(false);
       expect(thread!.comments[0].reactions?.THUMBS_DOWN).toBe(1);
       expect(thread!.comments[0].url).toContain(`/pull/${pullNumber}#discussion_r`);
+      // The permalink handed out while the comment was a draft is the one it
+      // keeps once submitted, which is what makes citing a pending comment safe.
+      expect(thread!.comments[0].url).toBe(draftFindingUrl);
       return thread!.id;
     });
   });

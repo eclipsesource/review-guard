@@ -93,6 +93,12 @@ export function createMcpServer(client: GitHubReviewClient): McpServer {
   const scopeNote = scope
     ? ` This server is pinned to ${scope.owner}/${scope.repo}#${scope.pullNumber}. The PR is implicit (no owner/repo/pull_number arguments).`
     : "";
+  // A pending comment's permalink is already its final one, so cross-linking
+  // findings inside a draft review works. Every tool that hands back pending
+  // comments says so, since the link does not resolve while drafting and an
+  // agent would otherwise assume it is broken.
+  const pendingPermalinkNote =
+    " Each pending comment already carries its final `url` permalink. It starts resolving once the review is submitted, and because all comments of a review go live together, one pending comment may link another.";
   const target = (args: Record<string, unknown>): PullRequestInput =>
     scope ?? {
       owner: args.owner as string,
@@ -103,7 +109,8 @@ export function createMcpServer(client: GitHubReviewClient): McpServer {
   // -- get_pr_review_context -------------------------------------------------
   server.tool(
     "get_pr_review_context",
-    "Get the pull request author/message plus all submitted PR discussion context: review summaries, inline review threads with resolved state, and general PR comments." +
+    "Get the pull request author/message plus all submitted PR discussion context: review summaries, inline review threads with resolved state and reactions, and general PR comments. " +
+      "Every review, review comment and PR comment carries its GitHub permalink as `url`, so you can link an earlier discussion when you refer to one (a thread's permalink is its first comment's `url`)." +
       scopeNote,
     prFields,
     async (args) => {
@@ -121,6 +128,7 @@ export function createMcpServer(client: GitHubReviewClient): McpServer {
   server.tool(
     "list_pending_review",
     "List the authenticated user's current pending (draft) review on a pull request, including all current pending review comments. Returns null if there is no pending review." +
+      pendingPermalinkNote +
       scopeNote,
     prFields,
     async (args) => {
@@ -138,6 +146,7 @@ export function createMcpServer(client: GitHubReviewClient): McpServer {
   server.tool(
     "add_review_comments",
     "Add one or more comments to the authenticated user's pending review. Creates the pending review if it does not already exist. The review is NOT submitted." +
+      pendingPermalinkNote +
       scopeNote,
     { ...prFields, ...AddReviewCommentsFields },
     async (args) => {
@@ -159,6 +168,7 @@ export function createMcpServer(client: GitHubReviewClient): McpServer {
   server.tool(
     "modify_review_comment",
     "Update or delete one comment from the authenticated user's pending review. This cannot modify submitted review comments." +
+      pendingPermalinkNote +
       scopeNote,
     { ...prFields, ...ModifyReviewCommentFields },
     async (args) => {

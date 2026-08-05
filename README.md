@@ -62,8 +62,8 @@ npm link          # creates a global symlink to the binary
 
 | Tool                    | Availability      | Description                                                                                                                                                                      |
 | ----------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_pr_review_context` | always            | Get PR author/message, submitted review summaries, inline review threads with resolved state and reactions, and general PR comments                                              |
-| `list_pending_review`   | always            | List the authenticated user's pending draft review, including all current pending review comments                                                                                |
+| `get_pr_review_context` | always            | Get PR author/message, submitted review summaries, inline review threads with resolved state, reactions and permalinks, and general PR comments                                  |
+| `list_pending_review`   | always            | List the authenticated user's pending draft review, including all current pending review comments and their permalinks                                                           |
 | `add_review_comments`   | always            | Add one or more comments to the authenticated user's pending review, creating the pending review if needed                                                                       |
 | `modify_review_comment` | always            | Update or delete one comment from the authenticated user's pending review                                                                                                        |
 | `delete_pending_review` | always            | Delete the authenticated user's pending review and all its comments                                                                                                              |
