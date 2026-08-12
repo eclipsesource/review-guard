@@ -46,6 +46,12 @@ Or pin to a specific version:
 npm install -g @eclipsesource/review-guard-mcp@<version>
 ```
 
+The server is also listed in the [MCP Registry](https://registry.modelcontextprotocol.io)
+as `com.eclipsesource/review-guard`, so clients that browse the registry can find
+and install it from there. The registry runs the published npm package on your own
+machine in the default pending mode. It is metadata only, there is no hosted
+instance to connect to.
+
 ### From source
 
 Requires npm >= 12 and a Node version supported by it (see [CONTRIBUTING.md](CONTRIBUTING.md)):

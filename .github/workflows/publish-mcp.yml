@@ -1,0 +1,63 @@
+# Lists an already released version in the MCP Registry as
+# com.eclipsesource/review-guard. The Release workflow calls this once the tag
+# and the npm version exist, and it can be dispatched on its own to retry a
+# listing that failed without redoing the release. Registry versions are
+# immutable, so a retry only succeeds while the version is still unlisted.
+name: Publish to MCP Registry
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to list, e.g. 0.3.0 (reads server.json from tag v0.3.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: mcp-registry-publish
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The tag, so server.json describes exactly the version being listed.
+          ref: v${{ inputs.version }}
+
+      # The registry proves package ownership by reading mcpName from the
+      # version manifest at registry.npmjs.org, so that has to be served before
+      # publishing. Same URL shape the registry itself requests.
+      - name: Wait for npm to serve the version manifest
+        run: |
+          for _ in $(seq 1 20); do
+            NAME="$(curl -fsSL "https://registry.npmjs.org/@eclipsesource%2Freview-guard-mcp/$VERSION" | jq -r '.mcpName // empty' || true)"
+            if [ "$NAME" = "com.eclipsesource/review-guard" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::registry.npmjs.org did not serve mcpName for $VERSION within 5 minutes"
+          exit 1
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      # Domain based authentication against the proof served from
+      # https://eclipsesource.com/.well-known/mcp-registry-auth, which is what
+      # entitles this repository to the com.eclipsesource namespace.
+      - name: Publish to the MCP Registry
+        env:
+          MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+        run: |
+          ./mcp-publisher login http --domain eclipsesource.com --private-key "$MCP_PRIVATE_KEY"
+          ./mcp-publisher publish
