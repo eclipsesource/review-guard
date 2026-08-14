@@ -1,0 +1,94 @@
+# Lists an already released version in the MCP Registry as
+# com.eclipsesource/review-guard. The Release workflow calls this once the tag
+# and the npm version exist, and it can be dispatched on its own to retry a
+# listing that failed without redoing the release. Registry versions are
+# immutable, so a retry only succeeds while the version is still unlisted.
+name: Publish to MCP Registry
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to list, e.g. 0.3.0 (reads server.json from tag v0.3.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: mcp-registry-publish
+    env:
+      VERSION: ${{ inputs.version }}
+      # Pinned rather than releases/latest, because this job holds the signing
+      # key and must not run whatever build happens to be current. The checksum
+      # is the linux amd64 entry of registry_1.8.1_checksums.txt on that tag.
+      MCP_PUBLISHER_VERSION: "1.8.1"
+      MCP_PUBLISHER_SHA256: "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc"
+    steps:
+      # Same check as the release workflow, so a typo in the dispatch input
+      # fails with a clear message instead of a confusing checkout failure.
+      - name: Validate version
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$VERSION' is not plain X.Y.Z semver"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          # The tag, so server.json describes exactly the version being listed.
+          ref: v${{ inputs.version }}
+
+      # The publish step uploads whatever the tag's server.json declares, while
+      # everything else here is keyed on VERSION. If the release bump missed
+      # server.json the two disagree, so refuse before anything is published.
+      - name: Verify server.json declares the version being listed
+        run: |
+          SERVER_VERSION="$(jq -r '.version' server.json)"
+          PACKAGE_VERSION="$(jq -r '.packages[0].version' server.json)"
+          if [ "$SERVER_VERSION" != "$VERSION" ] || [ "$PACKAGE_VERSION" != "$VERSION" ]; then
+            echo "::error::server.json at tag v$VERSION declares version $SERVER_VERSION and package version $PACKAGE_VERSION"
+            exit 1
+          fi
+
+      # The registry proves package ownership by reading mcpName from the
+      # version manifest at registry.npmjs.org, so that has to be served before
+      # publishing. Same URL shape the registry itself requests.
+      - name: Wait for npm to serve the version manifest
+        run: |
+          for _ in $(seq 1 20); do
+            NAME="$(curl -fsSL "https://registry.npmjs.org/@eclipsesource%2Freview-guard-mcp/$VERSION" | jq -r '.mcpName // empty' || true)"
+            if [ "$NAME" = "com.eclipsesource/review-guard" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::registry.npmjs.org did not serve mcpName for $VERSION within 5 minutes"
+          exit 1
+
+      # The runner is ubuntu-latest, so the linux amd64 build. Verified against
+      # the pinned checksum before it is unpacked and given the private key.
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  mcp-publisher.tar.gz" | sha256sum --check --strict -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+
+      # Domain based authentication against the proof served from
+      # https://eclipsesource.com/.well-known/mcp-registry-auth, which is what
+      # entitles this repository to the com.eclipsesource namespace.
+      - name: Publish to the MCP Registry
+        env:
+          MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+        run: |
+          ./mcp-publisher login http --domain eclipsesource.com --private-key "$MCP_PRIVATE_KEY"
+          ./mcp-publisher publish

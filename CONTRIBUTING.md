@@ -100,6 +100,37 @@ work themselves during review.
 
 ## Releasing
 
-Maintainers release through the **Release** GitHub Actions workflow. The full
-process, including the one-time npm trusted publishing setup, is documented in
+Maintainers release through the **Release** GitHub Actions workflow. It bumps
+the version in both `package.json` and `server.json`, publishes to npm, and
+then calls **Publish to MCP Registry** to list the new version in the
+[MCP Registry](https://registry.modelcontextprotocol.io) as
+`com.eclipsesource/review-guard`. The full process, including the one-time npm
+trusted publishing setup and the one-time MCP Registry setup, is documented in
 the [repository wiki](https://github.com/eclipsesource/review-guard/wiki).
+
+If only the listing fails, the release itself stands. Dispatch **Publish to MCP
+Registry** with the released version to retry it. It reads `server.json` from
+that version's tag, so it needs no other input. Registry versions are immutable,
+so this only works while the version is genuinely unlisted.
+
+The registry entry is metadata only. Nothing is hosted for users, they run the
+npm package locally. Two invariants keep it publishable:
+
+- `mcpName` in `package.json` must equal `name` in `server.json`. That is how
+  the registry verifies the package belongs to the namespace.
+- The registry name `com.eclipsesource/review-guard` is proven by the file
+  served at `https://eclipsesource.com/.well-known/mcp-registry-auth`, which
+  holds the public half of the signing key the release workflow uses. The
+  listing fails while that URL is unreachable, and redirects do not count.
+
+`test/server-json.test.ts` guards the parts of this that would otherwise only
+fail during a release. It validates `server.json` against the schema pinned in
+its `$schema` field, using the copy in `test/fixtures/`. That copy is vendored
+verbatim from the registry, which embeds the same file for its own validation.
+The pin is dated, so the copy cannot go stale, and the test fails if the pin is
+moved without vendoring the matching schema.
+
+**Publish to MCP Registry** pins the `mcp-publisher` release it downloads and
+checks its SHA-256 before running it, because that job holds the signing key.
+Bumping `MCP_PUBLISHER_VERSION` means taking the new checksum from the
+`registry_<version>_checksums.txt` asset of that release.

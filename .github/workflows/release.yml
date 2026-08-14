@@ -1,9 +1,10 @@
 # Manual release: bumps the version, prepends auto-generated release notes to
-# CHANGELOG.md, tags, creates a GitHub release, and publishes to npm.
+# CHANGELOG.md, tags, creates a GitHub release, publishes to npm and then calls
+# publish-mcp.yml to list the release in the MCP Registry.
 #
-# Publishing uses npm trusted publishing (OIDC), so no npm token is stored in
-# the repository. One-time setup and the first manual publish are documented
-# in the repository wiki.
+# Publishing to npm uses npm trusted publishing (OIDC), so no npm token is
+# stored in the repository. One-time setup and the first manual publish are
+# documented in the repository wiki.
 name: Release
 
 on:
@@ -69,7 +70,10 @@ jobs:
       - run: npm test
 
       - name: Bump version
-        run: npm version --no-git-tag-version "$VERSION"
+        run: |
+          npm version --no-git-tag-version "$VERSION"
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.json.tmp
+          mv server.json.tmp server.json
 
       - name: Generate release notes and update CHANGELOG.md
         env:
@@ -96,7 +100,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json CHANGELOG.md
+          git add package.json package-lock.json server.json CHANGELOG.md
           git commit -m "chore: release v$VERSION"
           git tag "v$VERSION"
           git push origin "HEAD:$GITHUB_REF_NAME"
@@ -109,3 +113,11 @@ jobs:
 
       - name: Publish to npm (trusted publishing, provenance attached)
         run: npm publish
+
+  # Runs after the tag exists, and can be dispatched on its own if it fails.
+  list-in-mcp-registry:
+    needs: release
+    uses: ./.github/workflows/publish-mcp.yml
+    with:
+      version: ${{ inputs.version }}
+    secrets: inherit

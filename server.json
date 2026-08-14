@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.eclipsesource/review-guard",
+  "title": "ReviewGuard",
+  "description": "Safety boundary for agent written GitHub PR reviews: pending and invisible, submitting is opt-in",
+  "version": "0.2.0",
+  "websiteUrl": "https://github.com/eclipsesource/review-guard#readme",
+  "repository": {
+    "url": "https://github.com/eclipsesource/review-guard",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@eclipsesource/review-guard-mcp",
+      "version": "0.2.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "--stdio",
+          "valueHint": "stdio"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "GITHUB_TOKEN",
+          "description": "GitHub token with pull request read and write access. Can be left unset if the GitHub CLI is authenticated, because the server then falls back to gh auth token.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
