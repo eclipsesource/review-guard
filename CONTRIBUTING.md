@@ -120,8 +120,17 @@ npm package locally. Two invariants keep it publishable:
   the registry verifies the package belongs to the namespace.
 - The registry name `com.eclipsesource/review-guard` is proven by the file
   served at `https://eclipsesource.com/.well-known/mcp-registry-auth`, which
-  holds the public half of the signing key the release workflow uses. Releases
-  fail while that URL is unreachable, and redirects do not count.
+  holds the public half of the signing key the release workflow uses. The
+  listing fails while that URL is unreachable, and redirects do not count.
 
 `test/server-json.test.ts` guards the parts of this that would otherwise only
-fail during a release.
+fail during a release. It validates `server.json` against the schema pinned in
+its `$schema` field, using the copy in `test/fixtures/`. That copy is vendored
+verbatim from the registry, which embeds the same file for its own validation.
+The pin is dated, so the copy cannot go stale, and the test fails if the pin is
+moved without vendoring the matching schema.
+
+**Publish to MCP Registry** pins the `mcp-publisher` release it downloads and
+checks its SHA-256 before running it, because that job holds the signing key.
+Bumping `MCP_PUBLISHER_VERSION` means taking the new checksum from the
+`registry_<version>_checksums.txt` asset of that release.

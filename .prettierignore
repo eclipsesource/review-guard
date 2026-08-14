@@ -2,3 +2,6 @@ dist/
 coverage/
 package-lock.json
 CHANGELOG.md
+
+# Verbatim upstream copy, kept byte for byte identical to the served schema
+test/fixtures/

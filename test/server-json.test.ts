@@ -1,36 +1,48 @@
 // server.json is the MCP Registry entry. The registry rejects a publish when
-// the name does not match mcpName in the published package or when a version
-// does not match the npm version, and both errors only surface at release
-// time, so they are checked here instead.
-import { readFileSync } from "node:fs";
+// the file violates its schema, when the name does not match mcpName in the
+// published package, or when a version does not match the npm version, and all
+// of those errors only surface at release time, so they are checked here.
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
+import { Ajv } from "ajv";
 
-interface ServerJson {
+const require = createRequire(import.meta.url);
+
+// ajv-formats is CommonJS with a default-only export, which NodeNext types as a
+// namespace rather than the callable plugin, so it is required rather than
+// imported.
+const addFormats = require("ajv-formats") as typeof import("ajv-formats").default;
+
+const server = require("../server.json") as {
+  $schema: string;
   name: string;
-  description: string;
-  version: string;
   packages: {
     registryType: string;
     identifier: string;
     version: string;
     transport: { type: string };
-    packageArguments?: { type: string; value?: string }[];
+    packageArguments?: unknown;
   }[];
-}
-
-interface PackageJson {
-  name: string;
   version: string;
-  mcpName: string;
-}
+};
+const pkg = require("../package.json") as { mcpName: string; name: string; version: string };
 
-const read = <T>(file: string): T =>
-  JSON.parse(readFileSync(new URL(`../${file}`, import.meta.url), "utf8")) as T;
-
-const server = read<ServerJson>("server.json");
-const pkg = read<PackageJson>("package.json");
+// Vendored verbatim from the registry, which embeds the same file for its own
+// validation. The $schema above is pinned to a dated version, so this copy
+// cannot go stale, and the test below fails if the pin ever moves.
+const schema = require("./fixtures/mcp-server-schema-2025-12-11.json") as { $id: string };
 
 describe("server.json", () => {
+  it("satisfies the schema version it pins", () => {
+    expect(schema.$id).toBe(server.$schema);
+
+    const ajv = new Ajv({ strict: false });
+    addFormats(ajv);
+    const validate = ajv.compile(schema);
+
+    expect(validate(server), ajv.errorsText(validate.errors)).toBe(true);
+  });
+
   it("claims the namespace the package declares", () => {
     expect(server.name).toBe(pkg.mcpName);
   });
@@ -44,10 +56,6 @@ describe("server.json", () => {
   it("keeps both versions in step with package.json", () => {
     expect(server.version).toBe(pkg.version);
     expect(server.packages[0].version).toBe(pkg.version);
-  });
-
-  it("stays within the description limit the schema enforces", () => {
-    expect(server.description.length).toBeLessThanOrEqual(100);
   });
 
   // Without --stdio the binary starts the HTTP server, so a client following

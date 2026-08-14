@@ -48,9 +48,9 @@ npm install -g @eclipsesource/review-guard-mcp@<version>
 
 The server is also listed in the [MCP Registry](https://registry.modelcontextprotocol.io)
 as `com.eclipsesource/review-guard`, so clients that browse the registry can find
-and install it from there. The registry runs the published npm package on your own
-machine in the default pending mode. It is metadata only, there is no hosted
-instance to connect to.
+and install it from there. The entry is metadata only, there is no hosted instance
+to connect to: it describes the npm package above, which your client installs and
+runs locally in the default pending mode.
 
 ### From source
 
