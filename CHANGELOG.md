@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.0 (2026-08-14)
+
+## What's Changed
+* feat: list the server in the MCP Registry by @sdirix in https://github.com/eclipsesource/review-guard/pull/2
+
+
+**Full Changelog**: https://github.com/eclipsesource/review-guard/compare/v0.2.0...v0.3.0
+
 ## v0.2.0 (2026-08-05)
 
 ## What's Changed

@@ -3,7 +3,7 @@
   "name": "com.eclipsesource/review-guard",
   "title": "ReviewGuard",
   "description": "Safety boundary for agent written GitHub PR reviews: pending and invisible, submitting is opt-in",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "websiteUrl": "https://github.com/eclipsesource/review-guard#readme",
   "repository": {
     "url": "https://github.com/eclipsesource/review-guard",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "@eclipsesource/review-guard-mcp",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

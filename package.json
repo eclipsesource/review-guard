@@ -1,6 +1,6 @@
 {
   "name": "@eclipsesource/review-guard-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "mcpName": "com.eclipsesource/review-guard",
   "description": "MCP server that lets agents work on GitHub PR reviews behind a safety boundary: pending (draft) reviews by default, submitting as an explicit opt-in",
   "keywords": [
