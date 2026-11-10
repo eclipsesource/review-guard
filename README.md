@@ -4,11 +4,11 @@
 [![npm](https://img.shields.io/npm/v/%40eclipsesource%2Freview-guard-mcp)](https://www.npmjs.com/package/@eclipsesource/review-guard-mcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-MCP server (`review-guard-mcp`) that lets AI agents work on GitHub PR reviews behind a safety boundary. The server holds the write-enabled GitHub token and exposes only review operations, so the agent never sees the token. What those operations are allowed to do is fixed at server start, not negotiable by the agent.
+MCP server (`review-guard-mcp`) that lets AI agents work on GitHub PR reviews behind a safety boundary. The server holds the GitHub token and exposes only review operations, so the agent never sees the token. What those operations are allowed to do is fixed at server start, not negotiable by the agent.
 
 ## Why
 
-A write-enabled GitHub token is needed to create review comments, but giving that token directly to an agent risks accidental or prompt-injected actions: submitting approvals, requesting changes, closing other people's review threads, or touching unrelated repositories. This server sits in between and narrows the token down to exactly the review capabilities you opt into.
+GitHub token permissions are too coarse for agent reviews. A token that can draft review comments can also submit the review, including approvals and change requests, and the finest scope it offers is a repository. ReviewGuard holds the token and narrows it further than even fine-grained tokens allow: by default the agent can only build a pending review, submission is opt-in and limited to the actions you allow, and the server can be pinned to a single pull request. This guards against accidental or prompt-injected actions such as unwanted approvals, closing other people's review threads, or commenting on unrelated pull requests.
 
 ## Modes
 
