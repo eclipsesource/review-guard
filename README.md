@@ -66,15 +66,16 @@ npm link          # creates a global symlink to the binary
 
 ## Tools
 
-| Tool                    | Availability      | Description                                                                                                                                                                      |
-| ----------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_pr_review_context` | always            | Get PR author/message, submitted review summaries, inline review threads with resolved state, reactions and permalinks, and general PR comments                                  |
-| `list_pending_review`   | always            | List the authenticated user's pending draft review, including all current pending review comments and their permalinks                                                           |
-| `add_review_comments`   | always            | Add one or more comments to the authenticated user's pending review, creating the pending review if needed                                                                       |
-| `modify_review_comment` | always            | Update or delete one comment from the authenticated user's pending review                                                                                                        |
-| `delete_pending_review` | always            | Delete the authenticated user's pending review and all its comments                                                                                                              |
-| `submit`                | `--allow-submit`  | Submit the pending review as a real, posted review. The `action` is limited to the allowed set and the review summary always starts with the fixed, server-configured disclaimer |
-| `resolve_review_thread` | `--allow-resolve` | Resolve one of the authenticated user's **own** review threads (e.g. a prior finding the latest push fixed). Refuses threads started by anyone else                              |
+| Tool                      | Availability      | Description                                                                                                                                                                      |
+| ------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_pr_review_context`   | always            | Get PR author/message, submitted review summaries, inline review threads with resolved state, reactions and permalinks, and general PR comments                                  |
+| `list_pending_review`     | always            | List the authenticated user's pending draft review, including all current pending review comments and their permalinks                                                           |
+| `add_review_comments`     | always            | Add one or more comments to the authenticated user's pending review, creating the pending review if needed                                                                       |
+| `reply_to_review_threads` | always            | Reply to existing review threads, whoever started them, as part of the authenticated user's pending review. The replies show up in their threads once the review is submitted    |
+| `modify_review_comment`   | always            | Update or delete one comment or reply from the authenticated user's pending review                                                                                               |
+| `delete_pending_review`   | always            | Delete the authenticated user's pending review and all its comments                                                                                                              |
+| `submit`                  | `--allow-submit`  | Submit the pending review as a real, posted review. The `action` is limited to the allowed set and the review summary always starts with the fixed, server-configured disclaimer |
+| `resolve_review_thread`   | `--allow-resolve` | Resolve one of the authenticated user's **own** review threads (e.g. a prior finding the latest push fixed). Refuses threads started by anyone else                              |
 
 ## Submit mode flags
 
@@ -103,9 +104,10 @@ review-guard-mcp --port 4000 --repo eclipsesource/some-repo --pr 123
 
 When scoped, every tool drops its `owner`/`repo`/`pull_number` arguments and
 acts on that PR only. `resolve_review_thread` additionally checks that the
-thread belongs to it. The client (`github.ts`) enforces this independently of
-the tool schemas, so a caller cannot reach a different PR or repo the token can
-otherwise write to. Use this whenever the server backs an automated review of a
+thread belongs to it, and `reply_to_review_threads` checks the same for every
+thread it replies to, scoped or not. The client (`github.ts`) enforces this
+independently of the tool schemas, so a caller cannot reach a different PR or
+repo the token can otherwise write to. Use this whenever the server backs an automated review of a
 known PR (typically together with submit mode), so a prompt-injected agent
 cannot post to or resolve threads on unrelated PRs. Both flags are required
 together. Omitting them leaves the server unscoped (the caller supplies the PR
@@ -239,15 +241,15 @@ Please report vulnerabilities privately, as described in [SECURITY.md](SECURITY.
 
 The `src/github.ts` module is the only file that talks to GitHub. By default it cannot submit. Every capability beyond pending-review writes is gated at construction time. It enforces:
 
-1. **No `event` field on comment/thread mutations.** Draft comments always leave the review `PENDING` because `event` is omitted entirely.
+1. **No `event` field on comment/thread/reply mutations.** Draft comments and replies always leave the review `PENDING` because `event` is omitted entirely. Replies always name the pending review they belong to.
 2. **Submission is opt-in and gated.** The `submitPullRequestReview` mutation is called only inside `submitReview`, which refuses any action not in the `allowSubmit` set passed at construction. A client built without `--allow-submit` (the default) can never submit. `DISMISS` is never supported.
 3. **Fixed submission body.** Submitted reviews always start with the server-configured `--submit-body`. Callers can only append below it, never replace or remove it.
 4. **Thread resolution is opt-in and own-threads-only.** `resolveReviewThread` runs only when `--allow-resolve` is set and refuses threads not started by the authenticated user.
 5. **No REST submit/dismiss endpoints** are ever called.
-6. **Own-review writes.** Write tools only affect the authenticated user's own review.
+6. **Own-review writes.** Write tools only affect the authenticated user's own review. Replies are not limited to the user's own threads, since a reply is just another draft comment in that review.
 7. **PR scoping.** When started with `--repo`/`--pr`, every operation targeting a different PR or repository is refused inside the client, independent of the tool schemas.
 8. **Auditable.** Grep `src/github.ts` for `submitPullRequestReview`, `dismiss`, `APPROVE`, `REQUEST_CHANGES`. The mutation and events appear only inside `submitReview`. The gates are covered by unit tests in `test/github.test.ts`.
-9. **Post-mutation tripwire (defense in depth).** After creating a review, the response state is verified to be `PENDING`. Unlike the gates above this detects rather than prevents: on a violation the tool call fails with an MCP error that tells the agent to stop and alert the human, because many MCP clients do not show tool errors to the user on their own.
+9. **Post-mutation tripwire (defense in depth).** After creating a review or a thread reply, the response state is verified to be `PENDING`, and a reply must sit in the pending review it named. Unlike the gates above this detects rather than prevents: on a violation the tool call fails with an MCP error that tells the agent to stop and alert the human, because many MCP clients do not show tool errors to the user on their own.
 
 ## Development
 
@@ -277,7 +279,7 @@ src/
 test/            # vitest suite: CLI parsing, safety gates, tool registration
 ```
 
-- **GraphQL** for resolved review-thread context and mutations (`addPullRequestReview`, `addPullRequestReviewThread`, `updatePullRequestReviewComment`, `deletePullRequestReviewComment`, `deletePullRequestReview`, and, behind their opt-in gates, `submitPullRequestReview` and `resolveReviewThread`).
+- **GraphQL** for resolved review-thread context and mutations (`addPullRequestReview`, `addPullRequestReviewThread`, `addPullRequestReviewThreadReply`, `updatePullRequestReviewComment`, `deletePullRequestReviewComment`, `deletePullRequestReview`, and, behind their opt-in gates, `submitPullRequestReview` and `resolveReviewThread`).
 - **REST** for well-paginated PR review summaries and general PR conversation comments.
 - HTTP mode binds to `127.0.0.1` only (or the specific address given with `--host`).
 
