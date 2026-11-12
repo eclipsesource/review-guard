@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.0 (2026-11-12)
+
+## What's Changed
+* docs: correct the token motivation by @sdirix in https://github.com/eclipsesource/review-guard/pull/12
+* feat: reply to existing review threads by @sdirix in https://github.com/eclipsesource/review-guard/pull/13
+
+
+**Full Changelog**: https://github.com/eclipsesource/review-guard/compare/v0.3.0...v0.4.0
+
 ## v0.3.0 (2026-08-14)
 
 ## What's Changed
