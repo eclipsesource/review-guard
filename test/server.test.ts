@@ -14,6 +14,7 @@ const BASE_TOOLS = [
   "get_pr_review_context",
   "list_pending_review",
   "add_review_comments",
+  "reply_to_review_threads",
   "modify_review_comment",
   "delete_pending_review",
 ];
@@ -115,6 +116,35 @@ describe("tool dispatch", () => {
     expect(result.isError).toBe(true);
     const [content] = result.content as [{ type: string; text: string }];
     expect(content.text).toBe("upstream exploded");
+  });
+
+  it("maps reply_to_review_threads arguments onto the client input", async () => {
+    const { mcpClient, reviewClient } = await connect();
+    const spy = vi
+      .spyOn(reviewClient, "replyToReviewThreads")
+      .mockResolvedValue({ review: {}, addedReplies: [] } as never);
+    const result = await mcpClient.callTool({
+      name: "reply_to_review_threads",
+      arguments: {
+        owner: "octo",
+        repo: "hello",
+        pull_number: 1,
+        replies: [
+          { thread_id: "T_1", body: "first" },
+          { thread_id: "T_2", body: "second" },
+        ],
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(spy).toHaveBeenCalledWith({
+      owner: "octo",
+      repo: "hello",
+      pullNumber: 1,
+      replies: [
+        { threadId: "T_1", body: "first" },
+        { threadId: "T_2", body: "second" },
+      ],
+    });
   });
 
   it("passes the scoped PR to the client when arguments are omitted", async () => {

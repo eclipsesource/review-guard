@@ -5,8 +5,8 @@
  * By default it CANNOT submit reviews. Submission is an explicit, opt-in
  * capability gated at construction time. It enforces these invariants:
  *
- * 1. Comment/thread mutations NEVER include an `event` field, so creating draft
- *    comments always leaves the review PENDING (event is omitted entirely).
+ * 1. Comment/thread/reply mutations NEVER include an `event` field, so creating
+ *    draft comments always leaves the review PENDING (event is omitted entirely).
  *
  * 2. Submission happens ONLY through `submitReview`, and ONLY when the client
  *    was constructed with a non-empty `allowSubmit` set. `submitReview` refuses
@@ -26,13 +26,15 @@
  *    and refused if it targets anything else (`assertInScope`), and
  *    `resolveReviewThread` verifies the thread belongs to the scoped PR. This
  *    stops a caller (e.g. a prompt-injected agent) from acting on other PRs
- *    or repos the token can reach.
+ *    or repos the token can reach. Independent of any scope,
+ *    `replyToReviewThreads` refuses threads that do not belong to the PR the
+ *    call names.
  *
- * 7. Post-mutation tripwire (defense in depth): after creating a review, the
- *    response state is verified to be "PENDING". This detects rather than
- *    prevents. On a violation the tool call fails with an error message that
- *    tells the agent to stop and alert the human, because many MCP clients do
- *    not show tool errors to the user on their own.
+ * 7. Post-mutation tripwire (defense in depth): after creating a review or a
+ *    thread reply, the response state is verified to be "PENDING". This
+ *    detects rather than prevents. On a violation the tool call fails with an
+ *    error message that tells the agent to stop and alert the human, because
+ *    many MCP clients do not show tool errors to the user on their own.
  *
  * Auditable: grep this file for `submitPullRequestReview`, `dismiss`, `APPROVE`,
  * `REQUEST_CHANGES`. The mutation appears only inside `submitReview` and the
@@ -57,6 +59,59 @@ export class GitHubApiError extends Error {
   }
 }
 
+/**
+ * Error for a tripwire hit. The message addresses the agent, because many MCP
+ * clients never show tool errors to the human.
+ */
+function safetyAlert(finding: string): GitHubApiError {
+  return new GitHubApiError(
+    `SAFETY ALERT: ${finding} ` +
+      "Do not retry and do not continue the review. Report this error to the user verbatim and ask them " +
+      "to inspect the review on GitHub immediately.",
+  );
+}
+
+function isSamePullRequest(a: PullRequestInput, b: PullRequestInput): boolean {
+  return (
+    a.owner.toLowerCase() === b.owner.toLowerCase() &&
+    a.repo.toLowerCase() === b.repo.toLowerCase() &&
+    a.pullNumber === b.pullNumber
+  );
+}
+
+/** The PR a GraphQL review thread node belongs to, as selected by the thread lookups. */
+function threadPullRequest(thread: any): PullRequestInput {
+  const pr = thread?.pullRequest;
+  return {
+    owner: pr?.repository?.owner?.login ?? "",
+    repo: pr?.repository?.name ?? "",
+    pullNumber: pr?.number ?? -1,
+  };
+}
+
+/**
+ * Review comment fields read by `mapGraphqlReviewComment`. Every selection that
+ * feeds the mapper uses this list, so no field can go missing in one of them
+ * and silently fall back to its default.
+ */
+const REVIEW_COMMENT_FIELDS = `
+  id
+  url
+  body
+  path
+  line
+  createdAt
+  updatedAt
+  author { login }
+  replyTo { id }
+  pullRequestReview {
+    id
+    databaseId
+    state
+    author { login }
+  }
+`;
+
 // ---------------------------------------------------------------------------
 // Input types. Note there is no `event` field anywhere.
 // ---------------------------------------------------------------------------
@@ -80,6 +135,16 @@ export interface DraftReviewComment {
 export interface AddReviewCommentsInput extends PullRequestInput {
   commitOID?: string;
   comments: DraftReviewComment[];
+}
+
+export interface DraftThreadReply {
+  /** GraphQL node ID of the review thread to reply to. */
+  threadId: string;
+  body: string;
+}
+
+export interface ReplyToReviewThreadsInput extends PullRequestInput {
+  replies: DraftThreadReply[];
 }
 
 export interface ModifyReviewCommentInput extends PullRequestInput {
@@ -175,6 +240,11 @@ export interface ReviewComment {
    * link another.
    */
   url: string | null;
+  /**
+   * For a reply, the id of its thread's first comment, which GitHub links every
+   * reply to. Null for a comment that starts a thread.
+   */
+  replyTo: string | null;
   /** Reaction content -> count, only for counts > 0 (e.g. THUMBS_DOWN). */
   reactions?: Record<string, number>;
   pullRequestReview?: {
@@ -240,6 +310,12 @@ export interface AddReviewCommentsResult {
   addedComments: ReviewComment[];
 }
 
+export interface ReplyToReviewThreadsResult {
+  review: PendingReview;
+  /** The created replies, in the order of the input. */
+  addedReplies: ReviewComment[];
+}
+
 export interface ModifyReviewCommentResult {
   action: "updated" | "deleted";
   review: Pick<PendingReview, "id" | "databaseId" | "state">;
@@ -292,11 +368,7 @@ export class GitHubReviewClient {
    */
   private assertInScope(input: PullRequestInput): void {
     if (!this.scope) return;
-    const matches =
-      input.owner.toLowerCase() === this.scope.owner.toLowerCase() &&
-      input.repo.toLowerCase() === this.scope.repo.toLowerCase() &&
-      input.pullNumber === this.scope.pullNumber;
-    if (!matches) {
+    if (!isSamePullRequest(input, this.scope)) {
       throw new GitHubApiError(
         `This server is scoped to ${this.scope.owner}/${this.scope.repo}#${this.scope.pullNumber}. ` +
           `Refusing to operate on ${input.owner}/${input.repo}#${input.pullNumber}.`,
@@ -414,21 +486,8 @@ export class GitHubReviewClient {
                   totalCount
                   pageInfo { hasNextPage endCursor }
                   nodes {
-                    id
-                    url
-                    body
-                    path
-                    line
-                    createdAt
-                    updatedAt
-                    author { login }
+                    ${REVIEW_COMMENT_FIELDS}
                     reactionGroups { content reactors { totalCount } }
-                    pullRequestReview {
-                      id
-                      databaseId
-                      state
-                      author { login }
-                    }
                   }
                 }
               }
@@ -531,21 +590,8 @@ export class GitHubReviewClient {
             comments(first: 100, after: $cursor) {
               pageInfo { hasNextPage endCursor }
               nodes {
-                id
-                url
-                body
-                path
-                line
-                createdAt
-                updatedAt
-                author { login }
+                ${REVIEW_COMMENT_FIELDS}
                 reactionGroups { content reactors { totalCount } }
-                pullRequestReview {
-                  id
-                  databaseId
-                  state
-                  author { login }
-                }
               }
             }
           }
@@ -743,20 +789,7 @@ export class GitHubReviewClient {
               totalCount
               pageInfo { hasNextPage endCursor }
               nodes {
-                id
-                url
-                body
-                path
-                line
-                createdAt
-                updatedAt
-                author { login }
-                pullRequestReview {
-                  id
-                  databaseId
-                  state
-                  author { login }
-                }
+                ${REVIEW_COMMENT_FIELDS}
               }
             }
           }
@@ -857,11 +890,9 @@ export class GitHubReviewClient {
       // Tripwire, not a gate: this cannot undo whatever GitHub did, and many
       // MCP clients never show tool errors to the human. The message therefore
       // instructs the agent itself to stop and escalate.
-      throw new GitHubApiError(
-        `SAFETY ALERT: GitHub created review ${review.id} in state "${review.state}" instead of "PENDING". ` +
-          "The review may already be visible to others even though it was never submitted through this server. " +
-          "Do not retry and do not continue the review. Report this error to the user verbatim and ask them " +
-          "to inspect the review on GitHub immediately.",
+      throw safetyAlert(
+        `GitHub created review ${review.id} in state "${review.state}" instead of "PENDING". ` +
+          "The review may already be visible to others even though it was never submitted through this server.",
       );
     }
     return review.id;
@@ -878,20 +909,7 @@ export class GitHubReviewClient {
           thread {
             comments(first: 1) {
               nodes {
-                id
-                url
-                body
-                path
-                line
-                createdAt
-                updatedAt
-                author { login }
-                pullRequestReview {
-                  id
-                  databaseId
-                  state
-                  author { login }
-                }
+                ${REVIEW_COMMENT_FIELDS}
               }
             }
           }
@@ -930,7 +948,133 @@ export class GitHubReviewClient {
   }
 
   // -------------------------------------------------------------------------
-  // 4. Update or delete a comment from the authenticated user's pending review
+  // 4. Reply to review threads in the authenticated user's pending review
+  // -------------------------------------------------------------------------
+
+  // Unlike resolving, replying is not limited to the authenticated user's own
+  // threads. A reply only adds a draft comment to the user's own pending
+  // review, just like a new thread on the same line would.
+  async replyToReviewThreads(
+    input: ReplyToReviewThreadsInput,
+  ): Promise<ReplyToReviewThreadsResult> {
+    try {
+      this.assertInScope(input);
+      if (input.replies.length === 0) {
+        throw new GitHubApiError("At least one reply is required");
+      }
+
+      // Checked up front for every reply, so a bad thread id fails the call
+      // before anything is written.
+      await this.assertThreadsOnPullRequest(
+        input,
+        input.replies.map((reply) => reply.threadId),
+      );
+
+      const prNodeId = await this.getPullRequestNodeId(input.owner, input.repo, input.pullNumber);
+      const reviewId =
+        (await this.findAuthenticatedPendingReviewId(input)) ??
+        (await this.createEmptyPendingReview(prNodeId));
+
+      const addedReplies: ReviewComment[] = [];
+      for (const reply of input.replies) {
+        addedReplies.push(await this.addReplyToPendingReview(reviewId, reply));
+      }
+
+      const review = await this.listPendingReview(input);
+      if (!review) {
+        throw new GitHubApiError("Failed to read pending review after adding replies");
+      }
+
+      return { review, addedReplies };
+    } catch (error) {
+      if (error instanceof GitHubApiError) throw error;
+      throw new GitHubApiError(
+        `Failed to reply to review threads: ${error instanceof Error ? error.message : String(error)}`,
+        undefined,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Safety boundary: refuse thread ids that do not resolve to a review thread
+   * of the given PR. Since that PR already passed `assertInScope`, this also
+   * keeps replies inside the scope.
+   */
+  private async assertThreadsOnPullRequest(
+    input: PullRequestInput,
+    threadIds: string[],
+  ): Promise<void> {
+    const ids = [...new Set(threadIds)];
+    const result: any = await this.gql(
+      `query($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on PullRequestReviewThread {
+            pullRequest {
+              number
+              repository { name owner { login } }
+            }
+          }
+        }
+      }`,
+      { ids },
+    );
+
+    // `nodes` answers in the order of `ids`. A node of another type comes
+    // back as an empty object, so it fails the same way as a missing one.
+    ids.forEach((id, index) => {
+      const thread = result.nodes?.[index];
+      if (!thread?.pullRequest) {
+        throw new GitHubApiError(`Review thread ${id} not found.`);
+      }
+      const pr = threadPullRequest(thread);
+      if (!isSamePullRequest(pr, input)) {
+        throw new GitHubApiError(
+          `Review thread ${id} belongs to ${pr.owner}/${pr.repo}#${pr.pullNumber}. ` +
+            `Refusing to reply to it as part of a review on ${input.owner}/${input.repo}#${input.pullNumber}.`,
+        );
+      }
+    });
+  }
+
+  private async addReplyToPendingReview(
+    reviewId: string,
+    reply: DraftThreadReply,
+  ): Promise<ReviewComment> {
+    const mutation = `
+      mutation($input: AddPullRequestReviewThreadReplyInput!) {
+        addPullRequestReviewThreadReply(input: $input) {
+          comment {
+            ${REVIEW_COMMENT_FIELDS}
+          }
+        }
+      }
+    `;
+
+    // Always naming the pending review makes the reply part of the draft. The
+    // tripwire below checks that GitHub honored it.
+    const result: any = await this.gql(mutation, {
+      input: {
+        pullRequestReviewId: reviewId,
+        pullRequestReviewThreadId: reply.threadId,
+        body: reply.body,
+      },
+    });
+
+    const comment = result.addPullRequestReviewThreadReply?.comment;
+    const state = comment?.pullRequestReview?.state ?? null;
+    if (state !== "PENDING") {
+      throw safetyAlert(
+        `GitHub created reply ${comment?.id ?? "(unknown id)"} on thread ${reply.threadId} ` +
+          `in review state "${state ?? "none"}" instead of "PENDING". ` +
+          "The reply may already be visible to others even though the review was never submitted through this server.",
+      );
+    }
+    return this.mapGraphqlReviewComment(comment);
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. Update or delete a comment from the authenticated user's pending review
   // -------------------------------------------------------------------------
 
   async modifyReviewComment(input: ModifyReviewCommentInput): Promise<ModifyReviewCommentResult> {
@@ -977,20 +1121,7 @@ export class GitHubReviewClient {
       mutation($input: UpdatePullRequestReviewCommentInput!) {
         updatePullRequestReviewComment(input: $input) {
           pullRequestReviewComment {
-            id
-            url
-            body
-            path
-            line
-            createdAt
-            updatedAt
-            author { login }
-            pullRequestReview {
-              id
-              databaseId
-              state
-              author { login }
-            }
+            ${REVIEW_COMMENT_FIELDS}
           }
         }
       }
@@ -1029,20 +1160,7 @@ export class GitHubReviewClient {
             state
           }
           pullRequestReviewComment {
-            id
-            url
-            body
-            path
-            line
-            createdAt
-            updatedAt
-            author { login }
-            pullRequestReview {
-              id
-              databaseId
-              state
-              author { login }
-            }
+            ${REVIEW_COMMENT_FIELDS}
           }
         }
       }
@@ -1067,7 +1185,7 @@ export class GitHubReviewClient {
   }
 
   // -------------------------------------------------------------------------
-  // 5. Delete the authenticated user's pending review
+  // 6. Delete the authenticated user's pending review
   // -------------------------------------------------------------------------
 
   async deletePendingReview(
@@ -1113,7 +1231,7 @@ export class GitHubReviewClient {
   }
 
   // -------------------------------------------------------------------------
-  // 6. Submit the authenticated user's pending review (opt-in only)
+  // 7. Submit the authenticated user's pending review (opt-in only)
   // -------------------------------------------------------------------------
 
   async submitReview(
@@ -1180,7 +1298,7 @@ export class GitHubReviewClient {
   }
 
   // -------------------------------------------------------------------------
-  // 7. Resolve one of the authenticated user's own review threads (opt-in)
+  // 8. Resolve one of the authenticated user's own review threads (opt-in)
   // -------------------------------------------------------------------------
 
   async resolveReviewThread(threadId: string): Promise<{ id: string; isResolved: boolean }> {
@@ -1215,12 +1333,7 @@ export class GitHubReviewClient {
 
       // When scoped, refuse to resolve a thread that lives on a different PR.
       if (this.scope) {
-        const pr = thread.pullRequest;
-        this.assertInScope({
-          owner: pr?.repository?.owner?.login ?? "",
-          repo: pr?.repository?.name ?? "",
-          pullNumber: pr?.number ?? -1,
-        });
+        this.assertInScope(threadPullRequest(thread));
       }
 
       const author = thread.comments?.nodes?.[0]?.author?.login ?? null;
@@ -1300,6 +1413,7 @@ export class GitHubReviewClient {
       path: comment.path ?? "",
       line: comment.line ?? null,
       url: comment.url ?? null,
+      replyTo: comment.replyTo?.id ?? null,
       createdAt: comment.createdAt ?? "",
       updatedAt: comment.updatedAt ?? "",
       reactions: this.mapReactionGroups(comment),

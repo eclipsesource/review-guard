@@ -12,7 +12,7 @@
  * Setup (see CONTRIBUTING.md): a private throwaway repository and two GitHub
  * accounts with write access to it. The reviewer account is the one under
  * test. The author account creates the pull request, plants a foreign review
- * thread, and adds reactions.
+ * thread, adds reactions, and answers the reviewer's finding.
  *
  * Required environment variables:
  *   REVIEW_GUARD_TEST_REPO            owner/name of the test repository
@@ -38,6 +38,7 @@ import type {
   ModifyReviewCommentResult,
   PendingReview,
   PullRequestReviewContext,
+  ReplyToReviewThreadsResult,
   ReviewComment,
 } from "../../src/github.js";
 
@@ -98,6 +99,10 @@ const UPDATED_BODY = `Updated draft comment ${RUN_ID}`;
 const FINDING_BODY = `Integration test finding ${RUN_ID}`;
 const SUMMARY_BODY = `Integration test summary ${RUN_ID}`;
 const FOREIGN_BODY = `Foreign thread comment ${RUN_ID}`;
+const AUTHOR_REPLY_BODY = `Author reply to the finding ${RUN_ID}`;
+const OWN_REPLY_BODY = `Reply on the reviewer's own thread ${RUN_ID}`;
+const UPDATED_OWN_REPLY_BODY = `Updated reply on the reviewer's own thread ${RUN_ID}`;
+const FOREIGN_REPLY_BODY = `Reply on the foreign thread ${RUN_ID}`;
 
 const FILE_CONTENT = [
   "# ReviewGuard integration test fixture",
@@ -114,6 +119,7 @@ const BASE_TOOLS = [
   "get_pr_review_context",
   "list_pending_review",
   "modify_review_comment",
+  "reply_to_review_threads",
 ];
 
 /** Polls a check until it stops throwing, for GitHub read-after-write lag. */
@@ -195,7 +201,10 @@ let submitTools: Client;
 let scopedTools: Client;
 
 let draftComments: ReviewComment[];
+let findingCommentId: number;
 let ownThreadId: string;
+let foreignThreadId: string;
+let draftReplies: ReviewComment[];
 /** Permalink the finding carried while it was still a draft. */
 let draftFindingUrl: string | null;
 
@@ -221,6 +230,48 @@ async function fetchThread(
     isResolved: response.node.isResolved,
     resolvedBy: response.node.resolvedBy?.login ?? null,
   };
+}
+
+interface ThreadCommentView {
+  id: string;
+  author: string | null;
+  body: string;
+  url: string;
+  replyTo: string | null;
+}
+
+/** The thread's comments as the author account sees them. */
+async function fetchThreadComments(threadId: string): Promise<ThreadCommentView[]> {
+  const response = await authorGql<{
+    node: {
+      comments: {
+        nodes: {
+          id: string;
+          author: { login: string } | null;
+          body: string;
+          url: string;
+          replyTo: { id: string } | null;
+        }[];
+      };
+    } | null;
+  }>(
+    `query($id: ID!) {
+      node(id: $id) {
+        ... on PullRequestReviewThread {
+          comments(first: 100) { nodes { id author { login } body url replyTo { id } } }
+        }
+      }
+    }`,
+    { id: threadId },
+  );
+  if (!response.node) throw new Error(`Thread ${threadId} not found on GitHub`);
+  return response.node.comments.nodes.map((comment) => ({
+    id: comment.id,
+    author: comment.author?.login ?? null,
+    body: comment.body,
+    url: comment.url,
+    replyTo: comment.replyTo?.id ?? null,
+  }));
 }
 
 async function closeLeftovers(): Promise<void> {
@@ -426,6 +477,7 @@ describe("ReviewGuard against a real repository", () => {
     // asserted further down.
     for (const comment of review.comments) {
       expect(comment.url).toContain(`/pull/${pullNumber}#discussion_r`);
+      expect(comment.replyTo).toBeNull();
     }
   });
 
@@ -502,7 +554,7 @@ describe("ReviewGuard against a real repository", () => {
   });
 
   it("shows the submitted thread in context, including reactions from others", async () => {
-    const commentId = await eventually("the submitted inline comment to be visible", async () => {
+    findingCommentId = await eventually("the submitted inline comment to be visible", async () => {
       const { data } = await authorOctokit.rest.pulls.listReviewComments(target());
       const comment = data.find(
         (entry) => entry.user?.login === reviewerLogin && entry.body === FINDING_BODY,
@@ -513,7 +565,7 @@ describe("ReviewGuard against a real repository", () => {
     await authorOctokit.rest.reactions.createForPullRequestReviewComment({
       owner: config.owner,
       repo: config.repo,
-      comment_id: commentId,
+      comment_id: findingCommentId,
       content: "-1",
     });
 
@@ -558,20 +610,17 @@ describe("ReviewGuard against a real repository", () => {
       line: 4,
       side: "RIGHT",
     });
-    const foreignThreadId = await eventually(
-      "the foreign thread to appear in context",
-      async () => {
-        const context = await callTool<PullRequestReviewContext>(
-          pendingTools,
-          "get_pr_review_context",
-          target(),
-        );
-        const thread = context.threads.find((entry) => entry.comments[0]?.body === FOREIGN_BODY);
-        expect(thread).toBeDefined();
-        expect(thread!.comments[0].author).toBe(authorLogin);
-        return thread!.id;
-      },
-    );
+    foreignThreadId = await eventually("the foreign thread to appear in context", async () => {
+      const context = await callTool<PullRequestReviewContext>(
+        pendingTools,
+        "get_pr_review_context",
+        target(),
+      );
+      const thread = context.threads.find((entry) => entry.comments[0]?.body === FOREIGN_BODY);
+      expect(thread).toBeDefined();
+      expect(thread!.comments[0].author).toBe(authorLogin);
+      return thread!.id;
+    });
 
     const message = await callToolExpectError(submitTools, "resolve_review_thread", {
       thread_id: foreignThreadId,
@@ -581,6 +630,155 @@ describe("ReviewGuard against a real repository", () => {
 
     const thread = await fetchThread(foreignThreadId);
     expect(thread.isResolved).toBe(false);
+  });
+
+  it("reply_to_review_threads refuses a thread from a different pull request", async () => {
+    const message = await callToolExpectError(pendingTools, "reply_to_review_threads", {
+      ...target(),
+      pull_number: pullNumber + 1,
+      replies: [{ thread_id: ownThreadId, body: OWN_REPLY_BODY }],
+    });
+    expect(message).toContain(`belongs to ${config.owner}/${config.repo}#${pullNumber}`);
+    expect(message).toMatch(/Refusing to reply/);
+  });
+
+  it("reply_to_review_threads drafts replies on own and foreign threads", async () => {
+    // The usual re-review situation: the author answers the reviewer's finding.
+    await authorOctokit.rest.pulls.createReplyForReviewComment({
+      ...target(),
+      comment_id: findingCommentId,
+      body: AUTHOR_REPLY_BODY,
+    });
+    const context = await eventually("the author's reply to appear in the context", async () => {
+      const context = await callTool<PullRequestReviewContext>(
+        pendingTools,
+        "get_pr_review_context",
+        target(),
+      );
+      const thread = context.threads.find((entry) => entry.id === ownThreadId);
+      expect(thread?.comments.map((comment) => comment.body)).toEqual([
+        FINDING_BODY,
+        AUTHOR_REPLY_BODY,
+      ]);
+      expect(thread!.comments[1].replyTo).toBe(thread!.comments[0].id);
+      return context;
+    });
+    const firstCommentOf = (threadId: string) =>
+      context.threads.find((entry) => entry.id === threadId)?.comments[0]?.id;
+
+    const result = await callTool<ReplyToReviewThreadsResult>(
+      pendingTools,
+      "reply_to_review_threads",
+      {
+        ...target(),
+        replies: [
+          { thread_id: ownThreadId, body: OWN_REPLY_BODY },
+          { thread_id: foreignThreadId, body: FOREIGN_REPLY_BODY },
+        ],
+      },
+    );
+    expect(result.review.state).toBe("PENDING");
+    expect(result.addedReplies.map((reply) => reply.body)).toEqual([
+      OWN_REPLY_BODY,
+      FOREIGN_REPLY_BODY,
+    ]);
+    expect(result.addedReplies.map((reply) => reply.replyTo)).toEqual([
+      firstCommentOf(ownThreadId),
+      firstCommentOf(foreignThreadId),
+    ]);
+    for (const reply of result.addedReplies) {
+      expect(reply.author).toBe(reviewerLogin);
+      expect(reply.pullRequestReview?.id).toBe(result.review.id);
+      expect(reply.pullRequestReview?.state).toBe("PENDING");
+      expect(reply.url).toContain(`/pull/${pullNumber}#discussion_r`);
+    }
+    expect(result.review.comments.map((comment) => comment.id).sort()).toEqual(
+      result.addedReplies.map((reply) => reply.id).sort(),
+    );
+    draftReplies = result.addedReplies;
+  });
+
+  it("keeps draft replies invisible to other users and out of the submitted context", async () => {
+    const draftBodies = [OWN_REPLY_BODY, FOREIGN_REPLY_BODY];
+
+    const { data: reviewsSeenByAuthor } = await authorOctokit.rest.pulls.listReviews(target());
+    expect(reviewsSeenByAuthor.filter((review) => review.state === "PENDING")).toHaveLength(0);
+
+    const { data: commentsSeenByAuthor } =
+      await authorOctokit.rest.pulls.listReviewComments(target());
+    expect(
+      commentsSeenByAuthor.filter((comment) => draftBodies.includes(comment.body)),
+    ).toHaveLength(0);
+
+    expect((await fetchThreadComments(ownThreadId)).map((comment) => comment.body)).toEqual([
+      FINDING_BODY,
+      AUTHOR_REPLY_BODY,
+    ]);
+    expect((await fetchThreadComments(foreignThreadId)).map((comment) => comment.body)).toEqual([
+      FOREIGN_BODY,
+    ]);
+
+    const context = await callTool<PullRequestReviewContext>(
+      pendingTools,
+      "get_pr_review_context",
+      target(),
+    );
+    const contextBodies = context.threads.flatMap((thread) =>
+      thread.comments.map((comment) => comment.body),
+    );
+    expect(contextBodies.filter((body) => draftBodies.includes(body))).toHaveLength(0);
+  });
+
+  it("list_pending_review and modify_review_comment handle draft replies", async () => {
+    const review = await callTool<PendingReview>(pendingTools, "list_pending_review", target());
+    expect(review.comments.map((comment) => comment.body).sort()).toEqual(
+      [FOREIGN_REPLY_BODY, OWN_REPLY_BODY].sort(),
+    );
+    for (const comment of review.comments) {
+      expect(comment.replyTo).not.toBeNull();
+    }
+
+    const result = await callTool<ModifyReviewCommentResult>(
+      pendingTools,
+      "modify_review_comment",
+      {
+        ...target(),
+        comment_id: draftReplies[0].id,
+        action: "update",
+        body: UPDATED_OWN_REPLY_BODY,
+      },
+    );
+    expect(result.action).toBe("updated");
+    expect(result.comment.body).toBe(UPDATED_OWN_REPLY_BODY);
+    expect(result.comment.replyTo).toBe(draftReplies[0].replyTo);
+    expect(result.comment.pullRequestReview?.state).toBe("PENDING");
+  });
+
+  it("submit posts the replies into their original threads", async () => {
+    const submitted = await callTool<{ state: string }>(submitTools, "submit", {
+      ...target(),
+      action: "comment",
+    });
+    expect(submitted.state).toBe("COMMENTED");
+
+    await eventually("the replies to appear in their threads for the author account", async () => {
+      const own = await fetchThreadComments(ownThreadId);
+      expect(own.map((comment) => [comment.author, comment.body])).toEqual([
+        [reviewerLogin, FINDING_BODY],
+        [authorLogin, AUTHOR_REPLY_BODY],
+        [reviewerLogin, UPDATED_OWN_REPLY_BODY],
+      ]);
+      const foreign = await fetchThreadComments(foreignThreadId);
+      expect(foreign.map((comment) => [comment.author, comment.body])).toEqual([
+        [authorLogin, FOREIGN_BODY],
+        [reviewerLogin, FOREIGN_REPLY_BODY],
+      ]);
+      expect(own[2].replyTo).toBe(own[0].id);
+      expect(foreign[1].replyTo).toBe(foreign[0].id);
+      // As with new threads, a reply keeps the permalink it had as a draft.
+      expect(own[2].url).toBe(draftReplies[0].url);
+      expect(foreign[1].url).toBe(draftReplies[1].url);
+    });
   });
 
   it("a scoped server acts on its pull request implicitly", async () => {

@@ -238,6 +238,39 @@ describe("permalinks", () => {
   // The pending path is the one an agent uses to quote its own drafts, and the
   // `?? null` fallback in the mapper would let a dropped `url` selection
   // degrade silently, so it gets its own assertion.
+  it("marks pending replies with their thread's first comment", async () => {
+    const gql = gqlBySubstring({
+      "node(id: $reviewId)": {
+        node: {
+          id: "REV_1",
+          databaseId: 10,
+          state: "PENDING",
+          body: "",
+          createdAt: "2026-01-01T00:00:00Z",
+          author: { login: "bot" },
+          comments: {
+            totalCount: 2,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              draft("C_NEW", DISCUSSION_URL),
+              { ...draft("C_REPLY", DISCUSSION_URL), replyTo: { id: "C_ROOT" } },
+            ],
+          },
+        },
+      },
+    });
+    const { client } = makeClient(
+      {},
+      { gql, octokit: makeOctokitStub("bot", [PENDING_REVIEW_REST]) },
+    );
+
+    const review = await client.listPendingReview(PR);
+    expect(review?.comments.map((comment) => comment.replyTo)).toEqual([null, "C_ROOT"]);
+    // The mapper falls back to null, which reads as "starts a thread", so a
+    // dropped selection would mislabel every reply.
+    expect(gql.mock.calls[0][0]).toContain("replyTo { id }");
+  });
+
   it("exposes each pending review comment's permalink", async () => {
     const gql = gqlBySubstring({
       "node(id: $reviewId)": {
@@ -333,6 +366,192 @@ describe("deletePendingReview", () => {
   });
 });
 
+/** A review thread node as returned by the reply thread lookup. */
+function threadOn(pr: { owner: string; repo: string; number: number }) {
+  return {
+    pullRequest: { number: pr.number, repository: { name: pr.repo, owner: { login: pr.owner } } },
+    // Never selected by the lookup. Present so that an added own-thread check
+    // would see a foreign author and fail the tests below.
+    comments: { nodes: [{ author: { login: "alice" } }] },
+  };
+}
+const THREAD_ON_PR = threadOn({ owner: "octo", repo: "hello", number: 1 });
+
+function replySetup(
+  options: {
+    threads?: unknown[];
+    replyState?: string;
+    reviews?: unknown[];
+    clientOptions?: GitHubReviewClientOptions;
+  } = {},
+) {
+  const gql = gqlBySubstring({
+    "nodes(ids: $ids)": { nodes: options.threads ?? [THREAD_ON_PR] },
+    "pullRequest(number: $number)": { repository: { pullRequest: { id: "PR_NODE" } } },
+    // Listed before addPullRequestReview, which is a prefix of this mutation's name.
+    addPullRequestReviewThreadReply: (vars: unknown) => {
+      const input = (vars as { input: Record<string, string> }).input;
+      return {
+        addPullRequestReviewThreadReply: {
+          comment: {
+            id: `C_${input.pullRequestReviewThreadId}`,
+            url: `https://github.com/octo/hello/pull/1#discussion_r${input.pullRequestReviewThreadId}`,
+            body: input.body,
+            path: "a.ts",
+            line: 3,
+            author: { login: "bot" },
+            replyTo: { id: `ROOT_${input.pullRequestReviewThreadId}` },
+            pullRequestReview: {
+              id: input.pullRequestReviewId,
+              databaseId: 10,
+              state: options.replyState ?? "PENDING",
+              author: { login: "bot" },
+            },
+          },
+        },
+      };
+    },
+    addPullRequestReview: {
+      addPullRequestReview: { pullRequestReview: { id: "REV_NEW", state: "PENDING" } },
+    },
+    "node(id: $reviewId)": (vars: unknown) => ({
+      node: {
+        id: (vars as { reviewId: string }).reviewId,
+        databaseId: 10,
+        state: "PENDING",
+        body: "",
+        createdAt: "2026-01-01T00:00:00Z",
+        author: { login: "bot" },
+        comments: { totalCount: 0, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+      },
+    }),
+  });
+  const octokit = makeOctokitStub("bot", options.reviews ?? [PENDING_REVIEW_REST]);
+  return makeClient(options.clientOptions ?? {}, { gql, octokit });
+}
+
+function replyMutationInputs(gql: GqlMock): Record<string, unknown>[] {
+  return gql.mock.calls
+    .filter(([query]) => query.includes("addPullRequestReviewThreadReply"))
+    .map(([, vars]) => (vars as { input: Record<string, unknown> }).input);
+}
+
+function writeCalls(gql: GqlMock): string[] {
+  return gql.mock.calls.map(([query]) => query).filter((query) => query.includes("mutation"));
+}
+
+describe("replyToReviewThreads", () => {
+  it("adds replies to any thread of the PR within the existing pending review", async () => {
+    const { client, gql } = replySetup({ threads: [THREAD_ON_PR, THREAD_ON_PR] });
+    const result = await client.replyToReviewThreads({
+      ...PR,
+      replies: [
+        { threadId: "T_1", body: "first" },
+        { threadId: "T_2", body: "second" },
+      ],
+    });
+
+    // Exact inputs: the pending review id is always set and there is no `event`.
+    expect(replyMutationInputs(gql)).toEqual([
+      { pullRequestReviewId: "REV_1", pullRequestReviewThreadId: "T_1", body: "first" },
+      { pullRequestReviewId: "REV_1", pullRequestReviewThreadId: "T_2", body: "second" },
+    ]);
+    expect(result.addedReplies.map((reply) => reply.id)).toEqual(["C_T_1", "C_T_2"]);
+    expect(result.addedReplies.map((reply) => reply.replyTo)).toEqual(["ROOT_T_1", "ROOT_T_2"]);
+    expect(result.review.state).toBe("PENDING");
+  });
+
+  it("looks each distinct thread up once", async () => {
+    const { client, gql } = replySetup();
+    await client.replyToReviewThreads({
+      ...PR,
+      replies: [
+        { threadId: "T_1", body: "first" },
+        { threadId: "T_1", body: "second" },
+      ],
+    });
+    const lookup = gql.mock.calls.find(([query]) => query.includes("nodes(ids: $ids)"));
+    expect(lookup![1]).toEqual({ ids: ["T_1"] });
+    expect(replyMutationInputs(gql)).toHaveLength(2);
+  });
+
+  it("creates the pending review first when none exists", async () => {
+    const { client, gql, octokit } = replySetup({ reviews: [] });
+    octokit.pulls.listReviews
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValue({ data: [{ ...PENDING_REVIEW_REST, node_id: "REV_NEW" }] });
+
+    const result = await client.replyToReviewThreads({
+      ...PR,
+      replies: [{ threadId: "T_1", body: "reply" }],
+    });
+    expect(replyMutationInputs(gql)[0].pullRequestReviewId).toBe("REV_NEW");
+    expect(result.review.id).toBe("REV_NEW");
+  });
+
+  it.each([
+    ["unscoped", {}],
+    ["scoped", { scope: PR }],
+  ] as const)(
+    "refuses a thread on a different PR before writing anything (%s)",
+    async (_, clientOptions) => {
+      const { client, gql, octokit } = replySetup({
+        threads: [THREAD_ON_PR, threadOn({ owner: "octo", repo: "hello", number: 2 })],
+        clientOptions,
+      });
+      await expect(
+        client.replyToReviewThreads({
+          ...PR,
+          replies: [
+            { threadId: "T_1", body: "fine" },
+            { threadId: "T_OTHER", body: "elsewhere" },
+          ],
+        }),
+      ).rejects.toThrow(/T_OTHER belongs to octo\/hello#2\. Refusing to reply/);
+      expect(writeCalls(gql)).toEqual([]);
+      expect(octokit.pulls.listReviews).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a thread in a different repository", async () => {
+    const { client, gql } = replySetup({
+      threads: [threadOn({ owner: "evil", repo: "hello", number: 1 })],
+    });
+    await expect(
+      client.replyToReviewThreads({ ...PR, replies: [{ threadId: "T_1", body: "b" }] }),
+    ).rejects.toThrow(/belongs to evil\/hello#1/);
+    expect(writeCalls(gql)).toEqual([]);
+  });
+
+  it("matches the thread's owner and repo case-insensitively", async () => {
+    const { client } = replySetup({
+      threads: [threadOn({ owner: "Octo", repo: "HELLO", number: 1 })],
+    });
+    await expect(
+      client.replyToReviewThreads({ ...PR, replies: [{ threadId: "T_1", body: "b" }] }),
+    ).resolves.toBeDefined();
+  });
+
+  it.each([
+    ["a missing node", null],
+    ["a node that is not a review thread", {}],
+  ])("refuses %s before writing anything", async (_, node) => {
+    const { client, gql } = replySetup({ threads: [node] });
+    await expect(
+      client.replyToReviewThreads({ ...PR, replies: [{ threadId: "T_X", body: "b" }] }),
+    ).rejects.toThrow(/Review thread T_X not found/);
+    expect(writeCalls(gql)).toEqual([]);
+  });
+
+  it("requires at least one reply", async () => {
+    const { client, gql } = replySetup();
+    await expect(client.replyToReviewThreads({ ...PR, replies: [] })).rejects.toThrow(
+      /At least one reply/,
+    );
+    expect(gql).not.toHaveBeenCalled();
+  });
+});
+
 describe("PENDING post-mutation tripwire", () => {
   it("fails loudly and tells the agent to escalate when a created review is not PENDING", async () => {
     const gql = gqlBySubstring({
@@ -351,6 +570,23 @@ describe("PENDING post-mutation tripwire", () => {
     await expect(call).rejects.toThrow(/SAFETY ALERT/);
     await expect(call).rejects.toThrow(/Report this error to the user/);
   });
+
+  it("fails loudly and stops when a created reply is not PENDING", async () => {
+    const { client, gql } = replySetup({
+      threads: [THREAD_ON_PR, THREAD_ON_PR],
+      replyState: "COMMENTED",
+    });
+    const call = client.replyToReviewThreads({
+      ...PR,
+      replies: [
+        { threadId: "T_1", body: "first" },
+        { threadId: "T_2", body: "second" },
+      ],
+    });
+    await expect(call).rejects.toThrow(/SAFETY ALERT: GitHub created reply C_T_1 on thread T_1/);
+    await expect(call).rejects.toThrow(/Report this error to the user/);
+    expect(replyMutationInputs(gql)).toHaveLength(1);
+  });
 });
 
 describe("PR scoping", () => {
@@ -365,6 +601,9 @@ describe("PR scoping", () => {
       await expect(client.listPendingReview(input)).rejects.toThrow(/scoped to/);
       await expect(
         client.addReviewComments({ ...input, comments: [{ path: "a", body: "b", line: 1 }] }),
+      ).rejects.toThrow(/scoped to/);
+      await expect(
+        client.replyToReviewThreads({ ...input, replies: [{ threadId: "T_1", body: "b" }] }),
       ).rejects.toThrow(/scoped to/);
       await expect(
         client.modifyReviewComment({ ...input, commentId: "C_1", action: "delete" }),

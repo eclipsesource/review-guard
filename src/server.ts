@@ -41,6 +41,24 @@ const AddReviewCommentsFields = {
     .describe("Draft comments to add to the pending review"),
 };
 
+const ThreadReplySchema = z.object({
+  thread_id: z
+    .string()
+    .min(1)
+    .describe(
+      "GraphQL node ID of the review thread to reply to (a thread `id` from get_pr_review_context)",
+    ),
+  body: z.string().min(1).describe("Reply body (Markdown)"),
+});
+
+const ReplyToReviewThreadsFields = {
+  replies: z
+    .array(ThreadReplySchema)
+    .min(1)
+    .max(100)
+    .describe("Draft replies to add to the pending review"),
+};
+
 const ModifyReviewCommentFields = {
   comment_id: z
     .string()
@@ -127,7 +145,8 @@ export function createMcpServer(client: GitHubReviewClient): McpServer {
   // -- list_pending_review ---------------------------------------------------
   server.tool(
     "list_pending_review",
-    "List the authenticated user's current pending (draft) review on a pull request, including all current pending review comments. Returns null if there is no pending review." +
+    "List the authenticated user's current pending (draft) review on a pull request, including all current pending review comments. Returns null if there is no pending review. " +
+      "A comment with a non-null `replyTo` is a reply to an existing thread. `replyTo` is the id of that thread's first comment, as listed by get_pr_review_context." +
       pendingPermalinkNote +
       scopeNote,
     prFields,
@@ -145,7 +164,8 @@ export function createMcpServer(client: GitHubReviewClient): McpServer {
   // -- add_review_comments ---------------------------------------------------
   server.tool(
     "add_review_comments",
-    "Add one or more comments to the authenticated user's pending review. Creates the pending review if it does not already exist. The review is NOT submitted." +
+    "Add one or more comments to the authenticated user's pending review. Creates the pending review if it does not already exist. The review is NOT submitted. " +
+      "Every comment starts a new thread. To answer an existing thread, use reply_to_review_threads." +
       pendingPermalinkNote +
       scopeNote,
     { ...prFields, ...AddReviewCommentsFields },
@@ -164,10 +184,34 @@ export function createMcpServer(client: GitHubReviewClient): McpServer {
     },
   );
 
+  // -- reply_to_review_threads -----------------------------------------------
+  server.tool(
+    "reply_to_review_threads",
+    "Reply to one or more existing review threads of the pull request as part of the authenticated user's pending review. " +
+      "Works on any thread, whoever started it. Takes each thread's GraphQL node id (the `id` of a thread from get_pr_review_context). " +
+      "Creates the pending review if it does not already exist. The review is NOT submitted. " +
+      "The replies show up in their threads once the review is submitted." +
+      pendingPermalinkNote +
+      scopeNote,
+    { ...prFields, ...ReplyToReviewThreadsFields },
+    async (args) => {
+      try {
+        const result = await client.replyToReviewThreads({
+          ...target(args),
+          replies: args.replies.map((reply) => ({ threadId: reply.thread_id, body: reply.body })),
+        });
+        return toolSuccess(result);
+      } catch (error) {
+        const msg = error instanceof GitHubApiError ? error.message : String(error);
+        return toolError(msg);
+      }
+    },
+  );
+
   // -- modify_review_comment -------------------------------------------------
   server.tool(
     "modify_review_comment",
-    "Update or delete one comment from the authenticated user's pending review. This cannot modify submitted review comments." +
+    "Update or delete one comment or reply from the authenticated user's pending review. This cannot modify submitted review comments." +
       pendingPermalinkNote +
       scopeNote,
     { ...prFields, ...ModifyReviewCommentFields },

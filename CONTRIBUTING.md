@@ -51,7 +51,8 @@ regular `npm test` does not pick it up.
 
 It needs a **private throwaway repository** and **two GitHub accounts** with
 write access to it, because several checks involve a second user: draft
-invisibility, the foreign-thread resolve refusal, and reaction visibility.
+invisibility, the foreign-thread resolve refusal, replies on threads started by
+the other account, and reaction visibility.
 Configure it through environment variables:
 
 | Variable                           | Meaning                                                 |
@@ -70,7 +71,7 @@ npm run test:integration
 The suite creates a branch and a pull request (authored by the second
 account), walks the full tool surface (pending review lifecycle, submit with
 the fixed disclaimer, own-thread resolution, the foreign-thread refusal,
-reaction visibility, PR scoping), and then closes the pull request and
+thread replies, reaction visibility, PR scoping), and then closes the pull request and
 deletes the branch. Set `REVIEW_GUARD_TEST_KEEP=1` to keep both for
 inspection. Leftovers from crashed runs are cleaned up at the start of the
 next run.
