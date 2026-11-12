@@ -1,9 +1,9 @@
 # Security Policy
 
-ReviewGuard MCP is a safety boundary between AI agents and a write-enabled GitHub
-token. Reports about anything that lets an agent bypass a gate are especially
-valuable: submitting without `--allow-submit`, removing the fixed disclaimer,
-escaping the `--repo`/`--pr` scope, or resolving other users' threads.
+ReviewGuard MCP is a safety boundary between AI agents and a GitHub token.
+Reports about anything that lets an agent bypass a gate are especially valuable:
+submitting without `--allow-submit`, removing the fixed disclaimer, escaping the
+`--repo`/`--pr` scope, or resolving other users' threads.
 
 ## Supported versions
 
