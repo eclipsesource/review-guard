@@ -249,7 +249,7 @@ The `src/github.ts` module is the only file that talks to GitHub. By default it 
 6. **Own-review writes.** Write tools only affect the authenticated user's own review. Replies are not limited to the user's own threads, since a reply is just another draft comment in that review.
 7. **PR scoping.** When started with `--repo`/`--pr`, every operation targeting a different PR or repository is refused inside the client, independent of the tool schemas.
 8. **Auditable.** Grep `src/github.ts` for `submitPullRequestReview`, `dismiss`, `APPROVE`, `REQUEST_CHANGES`. The mutation and events appear only inside `submitReview`. The gates are covered by unit tests in `test/github.test.ts`.
-9. **Post-mutation tripwire (defense in depth).** After creating a review or a thread reply, the response state is verified to be `PENDING`. Unlike the gates above this detects rather than prevents: on a violation the tool call fails with an MCP error that tells the agent to stop and alert the human, because many MCP clients do not show tool errors to the user on their own.
+9. **Post-mutation tripwire (defense in depth).** After creating a review or a thread reply, the response state is verified to be `PENDING`, and a reply must sit in the pending review it named. Unlike the gates above this detects rather than prevents: on a violation the tool call fails with an MCP error that tells the agent to stop and alert the human, because many MCP clients do not show tool errors to the user on their own.
 
 ## Development
 

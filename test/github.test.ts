@@ -238,39 +238,6 @@ describe("permalinks", () => {
   // The pending path is the one an agent uses to quote its own drafts, and the
   // `?? null` fallback in the mapper would let a dropped `url` selection
   // degrade silently, so it gets its own assertion.
-  it("marks pending replies with their thread's first comment", async () => {
-    const gql = gqlBySubstring({
-      "node(id: $reviewId)": {
-        node: {
-          id: "REV_1",
-          databaseId: 10,
-          state: "PENDING",
-          body: "",
-          createdAt: "2026-01-01T00:00:00Z",
-          author: { login: "bot" },
-          comments: {
-            totalCount: 2,
-            pageInfo: { hasNextPage: false, endCursor: null },
-            nodes: [
-              draft("C_NEW", DISCUSSION_URL),
-              { ...draft("C_REPLY", DISCUSSION_URL), replyTo: { id: "C_ROOT" } },
-            ],
-          },
-        },
-      },
-    });
-    const { client } = makeClient(
-      {},
-      { gql, octokit: makeOctokitStub("bot", [PENDING_REVIEW_REST]) },
-    );
-
-    const review = await client.listPendingReview(PR);
-    expect(review?.comments.map((comment) => comment.replyTo)).toEqual([null, "C_ROOT"]);
-    // The mapper falls back to null, which reads as "starts a thread", so a
-    // dropped selection would mislabel every reply.
-    expect(gql.mock.calls[0][0]).toContain("replyTo { id }");
-  });
-
   it("exposes each pending review comment's permalink", async () => {
     const gql = gqlBySubstring({
       "node(id: $reviewId)": {
@@ -381,7 +348,10 @@ function replySetup(
   options: {
     threads?: unknown[];
     replyState?: string;
+    /** Review the created reply reports, defaults to the one it was added to. */
+    replyReviewId?: string;
     reviews?: unknown[];
+    pendingComments?: unknown[];
     clientOptions?: GitHubReviewClientOptions;
   } = {},
 ) {
@@ -402,7 +372,7 @@ function replySetup(
             author: { login: "bot" },
             replyTo: { id: `ROOT_${input.pullRequestReviewThreadId}` },
             pullRequestReview: {
-              id: input.pullRequestReviewId,
+              id: options.replyReviewId ?? input.pullRequestReviewId,
               databaseId: 10,
               state: options.replyState ?? "PENDING",
               author: { login: "bot" },
@@ -422,7 +392,11 @@ function replySetup(
         body: "",
         createdAt: "2026-01-01T00:00:00Z",
         author: { login: "bot" },
-        comments: { totalCount: 0, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+        comments: {
+          totalCount: options.pendingComments?.length ?? 0,
+          pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: options.pendingComments ?? [],
+        },
       },
     }),
   });
@@ -459,6 +433,10 @@ describe("replyToReviewThreads", () => {
     expect(result.addedReplies.map((reply) => reply.id)).toEqual(["C_T_1", "C_T_2"]);
     expect(result.addedReplies.map((reply) => reply.replyTo)).toEqual(["ROOT_T_1", "ROOT_T_2"]);
     expect(result.review.state).toBe("PENDING");
+    // The PR node id is only needed to create a review, which is not the case here.
+    expect(gql.mock.calls.some(([query]) => query.includes("pullRequest(number: $number)"))).toBe(
+      false,
+    );
   });
 
   it("looks each distinct thread up once", async () => {
@@ -485,6 +463,8 @@ describe("replyToReviewThreads", () => {
       ...PR,
       replies: [{ threadId: "T_1", body: "reply" }],
     });
+    const create = gql.mock.calls.find(([query]) => query.includes("AddPullRequestReviewInput"));
+    expect(create![1]).toEqual({ input: { pullRequestId: "PR_NODE" } });
     expect(replyMutationInputs(gql)[0].pullRequestReviewId).toBe("REV_NEW");
     expect(result.review.id).toBe("REV_NEW");
   });
@@ -543,6 +523,20 @@ describe("replyToReviewThreads", () => {
     expect(writeCalls(gql)).toEqual([]);
   });
 
+  it("lets listPendingReview tell replies from new threads", async () => {
+    const { client, gql } = replySetup({
+      pendingComments: [
+        { id: "C_NEW", replyTo: null },
+        { id: "C_REPLY", replyTo: { id: "C_ROOT" } },
+      ],
+    });
+    const review = await client.listPendingReview(PR);
+    expect(review?.comments.map((comment) => comment.replyTo)).toEqual([null, "C_ROOT"]);
+    // The mapper falls back to null, which reads as "starts a thread", so a
+    // dropped selection would mislabel every reply.
+    expect(gql.mock.calls[0][0]).toContain("replyTo { id }");
+  });
+
   it("requires at least one reply", async () => {
     const { client, gql } = replySetup();
     await expect(client.replyToReviewThreads({ ...PR, replies: [] })).rejects.toThrow(
@@ -586,6 +580,17 @@ describe("PENDING post-mutation tripwire", () => {
     await expect(call).rejects.toThrow(/SAFETY ALERT: GitHub created reply C_T_1 on thread T_1/);
     await expect(call).rejects.toThrow(/Report this error to the user/);
     expect(replyMutationInputs(gql)).toHaveLength(1);
+  });
+
+  it("fails loudly when a created reply lands in a different review", async () => {
+    const { client } = replySetup({ replyReviewId: "REV_OTHER" });
+    const call = client.replyToReviewThreads({
+      ...PR,
+      replies: [{ threadId: "T_1", body: "reply" }],
+    });
+    await expect(call).rejects.toThrow(
+      /SAFETY ALERT: .* in review REV_OTHER with state "PENDING" instead of the pending review REV_1/,
+    );
   });
 });
 

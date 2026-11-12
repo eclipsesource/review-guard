@@ -31,10 +31,11 @@
  *    call names.
  *
  * 7. Post-mutation tripwire (defense in depth): after creating a review or a
- *    thread reply, the response state is verified to be "PENDING". This
- *    detects rather than prevents. On a violation the tool call fails with an
- *    error message that tells the agent to stop and alert the human, because
- *    many MCP clients do not show tool errors to the user on their own.
+ *    thread reply, the response state is verified to be "PENDING", and a reply
+ *    must sit in the pending review it named. This detects rather than
+ *    prevents. On a violation the tool call fails with an error message that
+ *    tells the agent to stop and alert the human, because many MCP clients do
+ *    not show tool errors to the user on their own.
  *
  * Auditable: grep this file for `submitPullRequestReview`, `dismiss`, `APPROVE`,
  * `REQUEST_CHANGES`. The mutation appears only inside `submitReview` and the
@@ -841,9 +842,10 @@ export class GitHubReviewClient {
       }
 
       const prNodeId = await this.getPullRequestNodeId(input.owner, input.repo, input.pullNumber);
-      const reviewId =
-        (await this.findAuthenticatedPendingReviewId(input)) ??
-        (await this.createEmptyPendingReview(prNodeId, input.commitOID));
+      const reviewId = await this.getOrCreatePendingReviewId(input, {
+        prNodeId,
+        commitOID: input.commitOID,
+      });
 
       const addedComments: ReviewComment[] = [];
       for (const comment of input.comments) {
@@ -864,6 +866,23 @@ export class GitHubReviewClient {
         error,
       );
     }
+  }
+
+  /**
+   * The authenticated user's pending review on the PR, created empty when there
+   * is none yet. The PR node id is only needed for creating, so callers that
+   * have no other use for it leave it out and it is looked up on demand.
+   */
+  private async getOrCreatePendingReviewId(
+    input: PullRequestInput,
+    options: { prNodeId?: string; commitOID?: string } = {},
+  ): Promise<string> {
+    const existing = await this.findAuthenticatedPendingReviewId(input);
+    if (existing) return existing;
+    const prNodeId =
+      options.prNodeId ??
+      (await this.getPullRequestNodeId(input.owner, input.repo, input.pullNumber));
+    return this.createEmptyPendingReview(prNodeId, options.commitOID);
   }
 
   private async createEmptyPendingReview(prNodeId: string, commitOID?: string): Promise<string> {
@@ -970,10 +989,7 @@ export class GitHubReviewClient {
         input.replies.map((reply) => reply.threadId),
       );
 
-      const prNodeId = await this.getPullRequestNodeId(input.owner, input.repo, input.pullNumber);
-      const reviewId =
-        (await this.findAuthenticatedPendingReviewId(input)) ??
-        (await this.createEmptyPendingReview(prNodeId));
+      const reviewId = await this.getOrCreatePendingReviewId(input);
 
       const addedReplies: ReviewComment[] = [];
       for (const reply of input.replies) {
@@ -1062,11 +1078,12 @@ export class GitHubReviewClient {
     });
 
     const comment = result.addPullRequestReviewThreadReply?.comment;
-    const state = comment?.pullRequestReview?.state ?? null;
-    if (state !== "PENDING") {
+    const review = comment?.pullRequestReview;
+    if (review?.state !== "PENDING" || review.id !== reviewId) {
       throw safetyAlert(
         `GitHub created reply ${comment?.id ?? "(unknown id)"} on thread ${reply.threadId} ` +
-          `in review state "${state ?? "none"}" instead of "PENDING". ` +
+          `in review ${review?.id ?? "(none)"} with state "${review?.state ?? "none"}" ` +
+          `instead of the pending review ${reviewId}. ` +
           "The reply may already be visible to others even though the review was never submitted through this server.",
       );
     }
@@ -1251,10 +1268,7 @@ export class GitHubReviewClient {
         );
       }
 
-      const prNodeId = await this.getPullRequestNodeId(input.owner, input.repo, input.pullNumber);
-      const reviewId =
-        (await this.findAuthenticatedPendingReviewId(input)) ??
-        (await this.createEmptyPendingReview(prNodeId));
+      const reviewId = await this.getOrCreatePendingReviewId(input);
 
       const mutation = `
         mutation($input: SubmitPullRequestReviewInput!) {
